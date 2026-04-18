@@ -128,11 +128,30 @@ io.on('connection', (socket) => {
     if (alive.length <= 1 && room.started) {
       room.started = false;
       const winner = alive.length === 1 ? alive[0] : null;
-      io.to(socket.roomId).emit('game_end', {
+      const endPayload = {
         winner: winner ? winner.id : null,
         winnerName: winner ? winner.name : 'Draw',
         scores: room.players.map(p => ({ id: p.id, name: p.name, score: p.score, lines: p.lines }))
-      });
+      };
+      io.to(socket.roomId).emit('game_end', endPayload);
+      // 7秒後（リザルト表示後）に全員強制退出＆ルーム削除
+      const rid = socket.roomId;
+      const playerNames = room.players.map(p => p.name);
+      setTimeout(() => {
+        const r = getRoom(rid);
+        if (!r) return;
+        // 全プレイヤーに強制退出を通知してからルーム削除
+        io.to(rid).emit('force_leave_room');
+        // lastRoomからも削除（Name already in room防止）
+        playerNames.forEach(name => { delete lastRoom[name]; });
+        // 各プレイヤーをルームから退出させる
+        r.players.forEach(p => {
+          const s = io.sockets.sockets.get(p.id);
+          if (s) { s.leave(rid); s.roomId = null; }
+        });
+        delete rooms[rid];
+        console.log(`Room ${rid} deleted after game end`);
+      }, 7000);
       room.players.forEach(p => { p.alive = true; p.board = null; });
     }
   });
@@ -146,6 +165,7 @@ io.on('connection', (socket) => {
 
   socket.on('clear_last_room', () => {
     if (socket.playerName) delete lastRoom[socket.playerName];
+    socket.roomId = null;
   });
 
   socket.on('leave_room', () => {

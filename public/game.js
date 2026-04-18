@@ -274,9 +274,9 @@ class TetrisGame{
   spawnPiece(){
     const type=this.nextQueue.shift();
     this.nextQueue.push(this.bag.next());
-    // 枠外上から出現: y=0（HIDDENより上）
     this.current={type,rotation:0,x:3,y:0};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
+    if(renderer)renderer._wallBumpActive=false;
     if(!this.isValid(this.current)){this.alive=false;}
   }
 
@@ -302,14 +302,14 @@ class TetrisGame{
     const base={...this.current,rotation:newRot};
     if(this.isValid(base)){
       this.current=base;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
-      if(this.lastSpin)renderer&&renderer.onSpinTilt(dir);
+      if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
       return true;
     }
     if(kicks)for(const[kx,ky]of kicks){
       const t={...base,x:base.x+kx,y:base.y-ky};
       if(this.isValid(t)){
         this.current=t;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
-        if(this.lastSpin)renderer&&renderer.onSpinTilt(dir);
+        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
     }
@@ -342,17 +342,9 @@ class TetrisGame{
   move(dx){
     if(this.isValid(this.current,dx,0)){
       this.current.x+=dx;this.lastSpin=null;this.tryResetLock();SFX.move();
-      // 移動後に次の方向が壁かチェック
-      if(!this.isValid(this.current,dx,0)){
-        renderer&&renderer.onWallBump(dx);
-        _wallLockedDir=dx; // 壁ロック
-      } else {
-        _wallLockedDir=0; // 壁から離れたらロック解除
-      }
       return true;
     } else {
       renderer&&renderer.onWallBump(dx);
-      _wallLockedDir=dx; // 壁ロック
       return false;
     }
   }
@@ -557,6 +549,7 @@ class TetrisGame{
       const next=this.holdPiece;this.holdPiece=type;
       this.current={type:next,rotation:0,x:3,y:0};
       this.lastSpin=null;this.lastSpinType=null;this.locking=false;
+      if(renderer)renderer._wallBumpActive=false;
     }else{this.holdPiece=type;this.spawnPiece();}
     this.cancelLock();SFX.hold();
   }
@@ -727,7 +720,8 @@ class GameRenderer{
     this.boardCont.addChild(aboveBg);
     const bg=new PIXI.Graphics();
     bg.beginFill(0x000010,0.95);bg.drawRect(0,0,BOARD_W,BOARD_H);bg.endFill();
-    bg.lineStyle(0.5,0x001133,0.35);
+    // ボード全体のグリッド線（1ブロック間隔）
+    bg.lineStyle(0.5,0x0a2a4a,0.85);
     for(let c=0;c<=COLS;c++){bg.moveTo(c*CELL,0);bg.lineTo(c*CELL,BOARD_H);}
     for(let r=0;r<=ROWS;r++){bg.moveTo(0,r*CELL);bg.lineTo(BOARD_W,r*CELL);}
     this.boardCont.addChild(bg);
@@ -801,11 +795,6 @@ class GameRenderer{
       g.beginFill(0x888888,cellAlpha);
       g.drawRect(cx+1,cy+1,s-1,s-1);
       g.endFill();
-      g.lineStyle(0);
-      // グリッド線（マス目）を内部に表示
-      g.lineStyle(0.5,0xaaaaaa,cellAlpha*1.5);
-      g.moveTo(cx+1,cy+CELL/2);g.lineTo(cx+s,cy+CELL/2);
-      g.moveTo(cx+CELL/2,cy+1);g.lineTo(cx+CELL/2,cy+s);
       g.lineStyle(0);
     }
   }
@@ -924,6 +913,50 @@ class GameRenderer{
     if(settings.tilt!=='on')return;
     this.tiltTarget=dir>0?0.065:-0.065;
     setTimeout(()=>{this.tiltTarget=0;},350);
+  }
+
+  // 回転した瞬間のスピンキラキラ（小さめ・控えめ）
+  onSpinRotateSparkle(piece,spinType){
+    if(settings.particles==='off')return;
+    const color=PIECE_COLORS[piece.type]||0xffffff;
+    // Tスピンは紫系アクセント、他は自色
+    const sparkColor=piece.type==='T'?0xee88ff:color;
+    const shape=this.gs.getShape(piece.type,piece.rotation);
+    const n=settings.particles==='high'?4:2;
+    const isMini=spinType&&spinType.startsWith('MINI');
+    // miniは更に少なく
+    const count=isMini?Math.max(1,n-1):n;
+    for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
+      if(!shape[r][c])continue;
+      const dr=piece.y+r-HIDDEN;
+      const px=this.mainBX+(piece.x+c)*CELL+CELL/2;
+      const py=this.mainBY+dr*CELL+CELL/2;
+      for(let i=0;i<count;i++){
+        const g=new PIXI.Graphics();
+        // 星形と小円を混ぜる
+        const sz=Math.random()*1.8+0.6;
+        if(i%2===0){
+          // 小さいひし形（星っぽく）
+          g.beginFill(sparkColor,0.9);
+          g.moveTo(0,-sz*2);g.lineTo(sz*0.6,0);g.lineTo(0,sz*2);g.lineTo(-sz*0.6,0);
+          g.closePath();g.endFill();
+        } else {
+          g.beginFill(sparkColor,0.85);g.drawCircle(0,0,sz);g.endFill();
+        }
+        g.x=px+(Math.random()-0.5)*CELL*0.9;
+        g.y=py+(Math.random()-0.5)*CELL*0.9;
+        this.effectsLayer.addChild(g);
+        const angle=Math.random()*Math.PI*2;
+        const speed=Math.random()*2.2+0.8;
+        this.particles.push({
+          gfx:g,
+          vx:Math.cos(angle)*speed,
+          vy:Math.sin(angle)*speed-1.2,
+          life:0.85,
+          decay:0.045+Math.random()*0.025
+        });
+      }
+    }
   }
 
   // 壁バウンス: 押し込み中は繰り返さない
@@ -1297,19 +1330,15 @@ function handleKeyUp(e){
   keyState[e.code]=false;
   if(e.code==='ArrowLeft'||e.code==='ArrowRight'){
     stopDAS();
-    // キーを離したら壁バウンスフラグもリセット
     if(renderer)renderer._wallBumpActive=false;
-    _wallLockedDir=0; // 壁ロック解除
   }
   if(e.code==='ArrowDown')stopSoftDrop();
 }
-let _wallLockedDir=0; // 壁に当たってロックされた方向 (+1 or -1)
 function startDAS(dir){
   stopDAS();
   das=setTimeout(()=>{
     arr=setInterval(()=>{
       if(!gameState||!gameState.alive){stopDAS();return;}
-      if(_wallLockedDir===dir)return; // 壁ロック中はスキップ
       gameState.move(dir);
     },20);
   },133);
@@ -1364,6 +1393,14 @@ socket.on('game_end',({winner,winnerName,scores})=>{
   stopDAS();stopSoftDrop();
   if(gameState)gameState.alive=false;
   setTimeout(()=>showResult(winner,winnerName,scores),2000);
+});
+
+// ゲーム終了後に強制ロビー退出
+socket.on('force_leave_room',()=>{
+  // リザルト表示中でも強制的にロビーへ
+  setTimeout(()=>{
+    backToLobby();
+  },5000); // リザルト表示5秒後に強制退出
 });
 
 function showResult(winner,winnerName,scores){
