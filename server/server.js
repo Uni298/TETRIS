@@ -119,6 +119,28 @@ io.on('connection', (socket) => {
     socket.to(socket.roomId).emit('opponent_spin', { id: socket.id, spinType });
   });
 
+  // ルーム一覧取得
+  socket.on('get_rooms', () => {
+    const list = Object.entries(rooms)
+      .filter(([, r]) => !r.started && r.players.length < 3)
+      .map(([id, r]) => ({ id, players: r.players.map(p => p.name), count: r.players.length }));
+    socket.emit('rooms_list', list);
+  });
+
+  // ゲーム後に同じルームへ再参加
+  socket.on('rejoin_room', ({ roomId: rid, name }) => {
+    const room = getRoom(rid);
+    if (!room) { socket.emit('error', { msg: 'Room no longer exists' }); return; }
+    if (room.started) { socket.emit('error', { msg: 'Game already started' }); return; }
+    if (room.players.length >= 3) { socket.emit('error', { msg: 'Room is full' }); return; }
+    if (room.players.find(p => p.name === name)) { socket.emit('error', { msg: 'Name already in room' }); return; }
+    room.players.push({ id: socket.id, name, board: null, score: 0, lines: 0, level: 1, alive: true, combo: 0, b2b: false });
+    socket.join(rid); socket.roomId = rid; socket.playerName = name;
+    lastRoom[name] = rid;
+    socket.emit('room_joined', { roomId: rid, players: room.players });
+    io.to(rid).emit('room_update', { players: room.players, host: room.host, started: room.started });
+  });
+
   socket.on('game_over', () => {
     const room = getRoom(socket.roomId); if (!room) return;
     const player = room.players.find(p => p.id === socket.id);
@@ -128,39 +150,25 @@ io.on('connection', (socket) => {
     if (alive.length <= 1 && room.started) {
       room.started = false;
       const winner = alive.length === 1 ? alive[0] : null;
-      const endPayload = {
+      io.to(socket.roomId).emit('game_end', {
         winner: winner ? winner.id : null,
         winnerName: winner ? winner.name : 'Draw',
         scores: room.players.map(p => ({ id: p.id, name: p.name, score: p.score, lines: p.lines }))
-      };
-      io.to(socket.roomId).emit('game_end', endPayload);
-      // 7秒後（リザルト表示後）に全員強制退出＆ルーム削除
-      const rid = socket.roomId;
-      const playerNames = room.players.map(p => p.name);
-      setTimeout(() => {
-        const r = getRoom(rid);
-        if (!r) return;
-        // 全プレイヤーに強制退出を通知してからルーム削除
-        io.to(rid).emit('force_leave_room');
-        // lastRoomからも削除（Name already in room防止）
-        playerNames.forEach(name => { delete lastRoom[name]; });
-        // 各プレイヤーをルームから退出させる
-        r.players.forEach(p => {
-          const s = io.sockets.sockets.get(p.id);
-          if (s) { s.leave(rid); s.roomId = null; }
-        });
-        delete rooms[rid];
-        console.log(`Room ${rid} deleted after game end`);
-      }, 7000);
+      });
       room.players.forEach(p => { p.alive = true; p.board = null; });
     }
   });
 
-  socket.on('chat_message', ({ message }) => {
-    const room = getRoom(socket.roomId); if (!room) return;
-    const msg = { id: socket.id, name: socket.playerName, message, time: Date.now() };
-    room.chat.push(msg); if (room.chat.length > 50) room.chat.shift();
-    io.to(socket.roomId).emit('chat_message', msg);
+  socket.on('chat_message', ({ message, name: clientName }) => {
+    const name = socket.playerName || clientName || 'Anonymous';
+    const msg = { id: socket.id, name, message, time: Date.now() };
+    // ルームがあればルーム内履歴にも保存
+    if (socket.roomId && getRoom(socket.roomId)) {
+      const room = getRoom(socket.roomId);
+      room.chat.push(msg); if (room.chat.length > 50) room.chat.shift();
+    }
+    // 全接続者に送信（どの画面にいても受け取れる）
+    io.emit('chat_message', msg);
   });
 
   socket.on('clear_last_room', () => {

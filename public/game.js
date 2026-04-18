@@ -42,7 +42,13 @@ function createRoom(){
 }
 function joinRoom(){const name=document.getElementById('player-name').value.trim();const rid=document.getElementById('room-id-input').value.trim().toUpperCase();if(!name){showError('Enter your name');return;}if(!rid){showError('Enter room ID');return;}myName=name;socket.emit('join_room',{roomId:rid,name});}
 function showError(msg){document.getElementById('lobby-error').textContent=msg;}
-function leaveRoom(){socket.emit('leave_room');location.reload();}
+function leaveRoom(){
+  socket.emit('leave_room');
+  roomId=null;roomPlayers=[];
+  document.getElementById('start-btn').style.display='none';
+  if(myName){showGameLobby(null);}
+  else{showScreen('lobby');}
+}
 function startGame(){socket.emit('start_game');}
 
 function backToLobby(){
@@ -52,16 +58,94 @@ function backToLobby(){
   renderer=null;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   const prevRoomId=roomId||_lastUsedRoomId;
+  // ルームから正しく退出
+  if(roomId){socket.emit('leave_room');}
   roomId=null;roomPlayers=[];
-  document.getElementById('chat-messages').innerHTML='';
   document.getElementById('start-btn').style.display='none';
-  // lastRoomのマッピングをサーバーからクリア（古いルームに再接続されないように）
-  socket.emit('clear_last_room');
-  showScreen('lobby');
-  if(myName)document.getElementById('player-name').value=myName;
-  if(prevRoomId)document.getElementById('room-id-input').value=prevRoomId;
+  if(myName){
+    showGameLobby(prevRoomId);
+  } else {
+    showScreen('lobby');
+  }
   showError('');
 }
+
+// ---- Game Lobby ----
+function showGameLobby(prevRoomId){
+  document.getElementById('gl-player-name').textContent=myName.toUpperCase();
+  document.getElementById('gl-error').textContent='';
+  // 前の部屋バナー
+  const banner=document.getElementById('prev-room-banner');
+  if(prevRoomId){
+    document.getElementById('prev-room-id-display').textContent=prevRoomId;
+    banner.style.display='flex';
+    _lastUsedRoomId=prevRoomId;
+  } else {
+    banner.style.display='none';
+  }
+  showScreen('game-lobby');
+  refreshRooms();
+}
+
+function refreshRooms(){
+  socket.emit('get_rooms');
+}
+
+socket.on('rooms_list',(list)=>{
+  const el=document.getElementById('rooms-list');
+  if(!el)return;
+  if(!list||list.length===0){
+    el.innerHTML='<div class="no-rooms">No open rooms</div>';return;
+  }
+  el.innerHTML=list.map(r=>`
+    <div class="room-item" onclick="glJoinById('${r.id}')">
+      <div>
+        <div class="room-item-id">${r.id}</div>
+        <div class="room-item-players">${r.players.join(', ')}</div>
+      </div>
+      <div class="room-item-join">${r.count}/3 JOIN ▶</div>
+    </div>`).join('');
+});
+
+function glCreateRoom(){
+  const rid=document.getElementById('gl-room-id-input').value.trim().toUpperCase();
+  document.getElementById('gl-error').textContent='';
+  if(rid)socket.emit('create_room',{name:myName,roomId:rid});
+  else socket.emit('create_room',{name:myName});
+}
+
+function glJoinRoom(){
+  const rid=document.getElementById('gl-join-id-input').value.trim().toUpperCase();
+  if(!rid){document.getElementById('gl-error').textContent='Enter a Room ID';return;}
+  glJoinById(rid);
+}
+
+function glJoinById(rid){
+  document.getElementById('gl-error').textContent='';
+  socket.emit('rejoin_room',{roomId:rid,name:myName});
+}
+
+function rejoinPrevRoom(){
+  if(!_lastUsedRoomId)return;
+  document.getElementById('gl-error').textContent='';
+  socket.emit('rejoin_room',{roomId:_lastUsedRoomId,name:myName});
+}
+
+function glBackToTitle(){
+  myName='';roomId=null;_lastUsedRoomId=null;
+  showScreen('lobby');
+}
+
+// game-lobbyのerrorはgl-errorに表示
+const _origShowError=showError;
+socket.on('error',({msg})=>{
+  const glErr=document.getElementById('gl-error');
+  if(document.getElementById('game-lobby').classList.contains('active')&&glErr){
+    glErr.textContent=msg;
+  } else {
+    showError(msg);
+  }
+});
 
 socket.on('rejoin_result',({success,roomId:rid,players,host})=>{
   if(!success){showScreen('lobby');return;}
@@ -82,7 +166,6 @@ socket.on('room_update',({players,host,started})=>{
   document.getElementById('wait-status').textContent=players.length<2?'Waiting for players... (min 2)':`${players.length} players ready`;
 });
 socket.on('player_left',()=>addChatSystem('Player left'));
-socket.on('error',({msg})=>showError(msg));
 
 function updatePlayerList(players){
   document.getElementById('player-list').innerHTML=players.map((p,i)=>`<div class="player-item"><div class="player-avatar">${p.name[0].toUpperCase()}</div><span>${p.name}</span>${i===0?'<span class="host-badge">HOST</span>':''}</div>`).join('');
@@ -200,8 +283,8 @@ const SFX={
   gameover:()=>{[440,415,392,370,349,330].forEach((f,i)=>setTimeout(()=>playTone(f,'sawtooth',0.28,0.5),i*130));},
   // REN: ren数を直接受け取って半音計算 — グローバル変数不要で確実
   ren:(renCount)=>{
-    // renCount=2から始まる（2連続=REN2）
-    const semitone=renCount-1; // 1半音ずつ: REN2=1半音, REN3=2半音...
+    // renCount=2から: 全音(2半音)ずつ上がる
+    const semitone=(renCount-1)*2;
     const freq=REN_BASE_FREQ*Math.pow(2,semitone/12);
     playTone(freq,'square',0.15,0.6);
     if(renCount>=4)setTimeout(()=>playTone(freq*2,'square',0.08,0.3),45);
@@ -367,8 +450,8 @@ class TetrisGame{
 
   ghostY(){let gy=this.current.y;while(this.isValid({...this.current,y:gy+1}))gy++;return gy;}
 
-  startLockTimer(){if(this.lockTimer)return;this.lockTimer=setTimeout(()=>{if(!this.isValid(this.current,0,1))this.lockPiece();},this.lockDelay);}
-  cancelLock(){if(this.lockTimer){clearTimeout(this.lockTimer);this.lockTimer=null;}}
+  startLockTimer(){if(this.lockTimer)return;this.lockStartTime=performance.now();this.lockTimer=setTimeout(()=>{if(!this.isValid(this.current,0,1))this.lockPiece();},this.lockDelay);}
+  cancelLock(){if(this.lockTimer){clearTimeout(this.lockTimer);this.lockTimer=null;this.lockStartTime=null;}}
 
   lockPiece(){
     if(this.locking)return;
@@ -763,12 +846,13 @@ class GameRenderer{
     this.root.addChild(n);
   }
 
-  drawCell(gfx,x,y,size,type,alpha=1){
+  drawCell(gfx,x,y,size,type,alpha=1,lockFlash=0){
     const color=PIECE_COLORS[type]||0x334455,s=size-1;
     gfx.beginFill(color,alpha);gfx.drawRect(x+1,y+1,s-1,s-1);gfx.endFill();
     gfx.beginFill(0xffffff,alpha*0.35);gfx.drawRect(x+1,y+1,s-1,3);gfx.drawRect(x+1,y+1,3,s-1);gfx.endFill();
     gfx.beginFill(0x000000,alpha*0.4);gfx.drawRect(x+1,y+s-2,s-1,2);gfx.drawRect(x+s-2,y+1,2,s-1);gfx.endFill();
     if(settings.quality!=='low'){gfx.lineStyle(1,color,alpha*0.45);gfx.drawRect(x+1,y+1,s-1,s-1);gfx.lineStyle(0);}
+    if(lockFlash>0){gfx.beginFill(0xffffff,alpha*lockFlash*0.55);gfx.drawRect(x+1,y+1,s-1,s-1);gfx.endFill();}
   }
 
   drawBoard(){
@@ -783,14 +867,13 @@ class GameRenderer{
   drawGhost(){
     const g=this.ghostGfx;g.clear();const gs=this.gs;if(!gs.current)return;
     const gy=gs.ghostY();
-    if(gy===gs.current.y)return; // ミノと同じ位置なら非表示
+    if(gy===gs.current.y)return;
     const shape=gs.getShape(gs.current.type,gs.current.rotation);
-    const cellAlpha=0.18; // 薄いグリッドのみ
+    const cellAlpha=0.18;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
       const dr=gy+r-HIDDEN;
       const cx=(gs.current.x+c)*CELL,cy=dr*CELL,s=CELL-1;
-      // 薄い灰色の枠線のみ（塗りなし）
       g.lineStyle(1,0x888888,cellAlpha*2);
       g.beginFill(0x888888,cellAlpha);
       g.drawRect(cx+1,cy+1,s-1,s-1);
@@ -801,10 +884,16 @@ class GameRenderer{
 
   drawCurrent(){
     const g=this.currentGfx;g.clear();const gs=this.gs;if(!gs.current)return;
+    // ロック進行度: タイマー開始直後=1(白強)→時間経過で0(元色)
+    let lockFlash=0;
+    if(gs.lockTimer&&gs.lockStartTime!=null){
+      const elapsed=performance.now()-gs.lockStartTime;
+      lockFlash=Math.max(0,1-(elapsed/gs.lockDelay));
+    }
     const shape=gs.getShape(gs.current.type,gs.current.rotation);
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;const dr=gs.current.y+r-HIDDEN;
-      this.drawCell(g,(gs.current.x+c)*CELL,dr*CELL,CELL,gs.current.type,dr<0?0.75:1);
+      this.drawCell(g,(gs.current.x+c)*CELL,dr*CELL,CELL,gs.current.type,dr<0?0.75:1,lockFlash);
     }
   }
 
@@ -1111,7 +1200,9 @@ class GameRenderer{
     const d=this.opBoardData[targetId];if(!d)return;
     const sx=this.mainBX+BOARD_W/2;
     const sy=launchY!==undefined?launchY:this.mainBY+BOARD_H*0.5;
-    const tx=d.origX+(COLS*d.cell)/2,ty=d.origY+(d.boardH||ROWS*d.cell)/2;
+    // ターゲット: 相手ボードのゲージメーター位置（ボード左端）
+    const tx=d.origX-12;
+    const ty=d.origY+d.boardH*0.5;
     this.spawnProjectile(sx,sy,tx,ty,0x00f5ff,attack);
     SFX.attack();
   }
@@ -1231,19 +1322,39 @@ class GameRenderer{
   spawnProjectile(sx,sy,tx,ty,color,power){
     const cont=new PIXI.Container();cont.x=sx;cont.y=sy;this.projLayer.addChild(cont);
     const r=4+Math.min(power*0.9,12);
-    const glow=new PIXI.Graphics();glow.lineStyle(4,color,0.35);glow.drawCircle(0,0,r*2.2);cont.addChild(glow);
-    const ring=new PIXI.Graphics();ring.lineStyle(2,0xffffff,0.5);ring.drawCircle(0,0,r*1.3);cont.addChild(ring);
-    const core=new PIXI.Graphics();core.beginFill(color,1);core.drawCircle(0,0,r);core.endFill();
-    core.beginFill(0xffffff,0.85);core.drawCircle(-r*0.28,-r*0.28,r*0.42);core.endFill();
+
+    // 外側の鋭いリング（攻撃的）
+    const spike=new PIXI.Graphics();
+    const spikes=6;
+    for(let i=0;i<spikes;i++){
+      const a=i/spikes*Math.PI*2;
+      const a2=(i+0.5)/spikes*Math.PI*2;
+      spike.beginFill(color,0.8);
+      spike.moveTo(Math.cos(a)*r*0.6,Math.sin(a)*r*0.6);
+      spike.lineTo(Math.cos(a2)*r*2.2,Math.sin(a2)*r*2.2);
+      spike.lineTo(Math.cos(a+Math.PI*2/spikes)*r*0.6,Math.sin(a+Math.PI*2/spikes)*r*0.6);
+      spike.endFill();
+    }
+    cont.addChild(spike);
+
+    // コア
+    const core=new PIXI.Graphics();
+    core.beginFill(0xffffff,1);core.drawCircle(0,0,r*0.6);core.endFill();
+    core.beginFill(color,0.9);core.drawCircle(0,0,r*0.42);core.endFill();
     cont.addChild(core);
+
+    // パワー数字
     if(power>=2){
-      const pt=new PIXI.Text(power.toString(),new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:10,fill:0xffffff,fontWeight:'900'}));
+      const pt=new PIXI.Text(power.toString(),new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.min(10+power,16),fill:0xffffff,fontWeight:'900'}));
       pt.anchor.set(0.5);cont.addChild(pt);
     }
-    const dx=tx-sx,dy=ty-sy,dist=Math.sqrt(dx*dx+dy*dy);
-    const mx=(sx+tx)/2,my=(sy+ty)/2-Math.min(180,dist*0.45);
-    const frames=Math.round(55+Math.random()*10);
-    this.projectiles.push({cont,glow,ring,sx,sy,tx,ty,mx,my,color,frames,f:0,power,r});
+
+    // 直線距離・方向
+    const dx=tx-sx,dy=ty-sy;
+    const dist=Math.sqrt(dx*dx+dy*dy);
+    // 速度: 速めに一定 (35~50フレーム)
+    const frames=Math.round(35+Math.min(dist/30,15));
+    this.projectiles.push({cont,spike,core,sx,sy,tx,ty,color,frames,f:0,power,r,dist,dx,dy});
   }
 
   updateParticlesEtc(dt){
@@ -1255,38 +1366,51 @@ class GameRenderer{
     this.projectiles=this.projectiles.filter(p=>{
       p.f++;
       const t=p.f/p.frames;
-      // ease in-out cubic
-      const te=t<0.5?4*t*t*t:(t-1)*(2*t-2)*(2*t-2)+1;
-      const bx=(1-te)*(1-te)*p.sx+2*(1-te)*te*p.mx+te*te*p.tx;
-      const by=(1-te)*(1-te)*p.sy+2*(1-te)*te*p.my+te*te*p.ty;
-      p.cont.x=bx;p.cont.y=by;
-      p.cont.rotation+=0.12; // 1.2倍
-      const sc=1+0.14*Math.sin(p.f*0.35);
+      // ease-in（最初ゆっくり→急加速）で攻撃的に
+      const te=t*t*t;
+      const cx=p.sx+p.dx*te;
+      const cy=p.sy+p.dy*te;
+      p.cont.x=cx;p.cont.y=cy;
+      // スパイクを高速回転
+      p.spike.rotation+=0.28;
+      // 突撃時にスケール震動
+      const sc=1+0.22*Math.sin(p.f*0.7);
       p.cont.scale.set(sc);
-      p.glow.alpha=0.25+0.3*Math.sin(p.f*0.45);
-      p.ring.alpha=0.4+0.3*Math.cos(p.f*0.3);
-      if(p.f%2===0&&settings.particles!=='off'){
-        const tg=new PIXI.Graphics();tg.beginFill(p.color,0.6);tg.drawCircle(0,0,p.r*0.5*(1-t*0.5));tg.endFill();
-        tg.x=bx+(Math.random()-0.5)*4;tg.y=by+(Math.random()-0.5)*4;
+      // 尾を引くトレイル（直線方向に伸びる）
+      if(p.f%1===0&&settings.particles!=='off'){
+        const tg=new PIXI.Graphics();
+        const trailAlpha=0.55*(1-t);
+        tg.beginFill(p.color,trailAlpha);
+        // 楕円を進行方向に引き伸ばした軌跡
+        const trailLen=p.r*1.8*(1-t*0.4);
+        tg.drawCircle(0,0,p.r*0.35);
+        tg.endFill();
+        tg.x=cx-(p.dx/p.frames)*2;tg.y=cy-(p.dy/p.frames)*2;
         this.effectsLayer.addChild(tg);
-        this.particles.push({gfx:tg,vx:(Math.random()-0.5)*1.5,vy:(Math.random()-0.5)*1.5,life:0.65,decay:0.06});
+        this.particles.push({gfx:tg,vx:0,vy:0,life:trailAlpha,decay:0.12});
       }
       if(p.f>=p.frames){
-        const n=settings.particles==='high'?28:12;
+        // 着弾: 爆発的なバースト
+        const n=settings.particles==='high'?32:14;
         for(let i=0;i<n;i++){
           const g=new PIXI.Graphics();g.beginFill(p.color,1);
-          const sz=Math.random()*4+1.5;
-          if(i%3===0)g.drawCircle(0,0,sz);else g.drawRect(-sz/2,-sz/2,sz,sz);
-          g.endFill();g.x=p.tx+(Math.random()-0.5)*10;g.y=p.ty+(Math.random()-0.5)*10;
+          const sz=Math.random()*5+1.5;
+          if(i%4===0)g.drawCircle(0,0,sz);else g.drawRect(-sz/2,-sz/2,sz,sz);
+          g.endFill();g.x=p.tx+(Math.random()-0.5)*12;g.y=p.ty+(Math.random()-0.5)*12;
           this.effectsLayer.addChild(g);
-          const a=Math.random()*Math.PI*2,sp=Math.random()*10+4;
-          this.particles.push({gfx:g,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,decay:0.048+Math.random()*0.04});
+          // 進行方向前方への集中バースト
+          const baseAngle=Math.atan2(p.dy,p.dx);
+          const spread=i<n*0.4?(Math.random()-0.5)*1.2:(Math.random()-0.5)*Math.PI*2;
+          const a=baseAngle+spread;
+          const sp=Math.random()*12+5;
+          this.particles.push({gfx:g,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,life:1,decay:0.042+Math.random()*0.04});
         }
+        // 衝撃波リング
         if(settings.quality!=='low'){
           const sw=new PIXI.Graphics();sw.lineStyle(3,p.color,0.9);sw.drawCircle(0,0,6);
           sw.x=p.tx;sw.y=p.ty;this.effectsLayer.addChild(sw);
           let sr=6,sa=0.9;
-          const swT=()=>{sr+=5;sa-=0.055;sw.clear();sw.lineStyle(3,p.color,sa);sw.drawCircle(0,0,sr);
+          const swT=()=>{sr+=7;sa-=0.065;sw.clear();sw.lineStyle(3,p.color,sa);sw.drawCircle(0,0,sr);
             if(sa>0)requestAnimationFrame(swT);else try{sw.destroy();}catch(e){}};
           requestAnimationFrame(swT);
         }
@@ -1395,13 +1519,7 @@ socket.on('game_end',({winner,winnerName,scores})=>{
   setTimeout(()=>showResult(winner,winnerName,scores),2000);
 });
 
-// ゲーム終了後に強制ロビー退出
-socket.on('force_leave_room',()=>{
-  // リザルト表示中でも強制的にロビーへ
-  setTimeout(()=>{
-    backToLobby();
-  },5000); // リザルト表示5秒後に強制退出
-});
+
 
 function showResult(winner,winnerName,scores){
   const o=document.getElementById('result-overlay');
@@ -1419,14 +1537,23 @@ function addChatMessage(msg){
   const el=document.getElementById('chat-messages');
   const d=document.createElement('div');d.className='chat-msg';
   d.innerHTML=`<span class="chat-name">${esc(msg.name)}</span>: ${esc(msg.message)}`;
-  el.insertBefore(d,el.firstChild);
+  el.appendChild(d);
+  // 最大30件
+  while(el.children.length>30)el.removeChild(el.firstChild);
+  el.scrollTop=el.scrollHeight;
 }
 function addChatSystem(text){
   const el=document.getElementById('chat-messages');
   const d=document.createElement('div');d.className='chat-msg system';d.textContent=text;
-  el.insertBefore(d,el.firstChild);
+  el.appendChild(d);
+  while(el.children.length>30)el.removeChild(el.firstChild);
+  el.scrollTop=el.scrollHeight;
 }
-function sendChat(){const i=document.getElementById('chat-input');const m=i.value.trim();if(!m)return;socket.emit('chat_message',{message:m});i.value='';}
+function sendChat(){
+  const i=document.getElementById('chat-input');const m=i.value.trim();if(!m)return;
+  const name=myName||(document.getElementById('player-name').value.trim())||'Anonymous';
+  socket.emit('chat_message',{message:m,name});i.value='';
+}
 socket.on('chat_message',addChatMessage);
 function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
@@ -1444,4 +1571,7 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('tilt-select').value=settings.tilt;
   sfxVol=settings.sfxVolume/100;
   document.getElementById('chat-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendChat();});
+  document.getElementById('gl-join-id-input').addEventListener('keydown',e=>{if(e.key==='Enter')glJoinRoom();});
+  document.getElementById('gl-room-id-input').addEventListener('keydown',e=>{if(e.key==='Enter')glCreateRoom();});
+  document.getElementById('player-name').addEventListener('keydown',e=>{if(e.key==='Enter')createRoom();});
 });

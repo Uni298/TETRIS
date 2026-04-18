@@ -169,6 +169,62 @@
   .host-badge { background: var(--neon-yellow); color: #000; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.7rem; font-family: 'Orbitron', sans-serif; }
   .wait-status { color: rgba(255,255,255,0.4); font-size: 0.85rem; margin: 1rem 0; }
 
+  /* GAME LOBBY (ゲーム後に戻る画面) */
+  #game-lobby {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
+    gap: 1.2rem;
+  }
+  .game-lobby-card {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2rem 2.5rem;
+    width: 460px;
+    box-shadow: var(--border-glow), inset 0 0 30px rgba(0,245,255,0.05);
+  }
+  .game-lobby-card h2 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--neon-cyan);
+    font-size: 1rem;
+    margin-bottom: 1.2rem;
+    letter-spacing: 0.2em;
+  }
+  .lobby-player-name {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.4rem;
+    color: var(--neon-yellow);
+    letter-spacing: 0.15em;
+    margin-bottom: 0.3rem;
+  }
+  .rooms-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; max-height: 180px; overflow-y: auto; }
+  .room-item {
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(0,245,255,0.15);
+    border-radius: 6px;
+    padding: 0.6rem 1rem;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .room-item:hover { border-color: rgba(0,245,255,0.5); background: rgba(0,245,255,0.06); }
+  .room-item-id { font-family: 'Orbitron', sans-serif; color: var(--neon-yellow); font-size: 0.95rem; letter-spacing: 0.15em; }
+  .room-item-players { color: rgba(255,255,255,0.5); font-size: 0.8rem; }
+  .room-item-join { color: var(--neon-cyan); font-size: 0.8rem; }
+  .no-rooms { color: rgba(255,255,255,0.3); font-size: 0.85rem; text-align: center; padding: 1rem 0; }
+  .prev-room-banner {
+    background: rgba(0,245,255,0.08);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+  .prev-room-label { color: rgba(255,255,255,0.6); font-size: 0.78rem; }
+  .prev-room-id { font-family: 'Orbitron', sans-serif; color: var(--neon-yellow); font-size: 1rem; letter-spacing: 0.15em; }
+
   /* GAME SCREEN */
   #game {
     flex-direction: row;
@@ -177,15 +233,15 @@
     position: relative;
   }
 
-  /* CHAT — left side, overlay on pixi, minimal */
+  /* CHAT — 画面左下固定、常時表示 */
   #chat-panel {
-    position: absolute;
+    position: fixed;
     left: 0;
     bottom: 0;
-    width: 200px;
-    z-index: 50;
+    width: 220px;
+    z-index: 500;
     display: flex;
-    flex-direction: column-reverse; /* input at bottom, messages above */
+    flex-direction: column;
     padding: 0.6rem;
     pointer-events: none;
   }
@@ -221,7 +277,6 @@
     transition: background 0.2s;
   }
   #chat-send:hover { background: rgba(0,245,255,0.25); }
-  /* Messages: no background, white text only, newest at bottom of list (top of column-reverse) */
   #chat-messages {
     max-height: 180px;
     overflow: hidden;
@@ -353,6 +408,40 @@
     </div>
   </div>
 
+  <!-- GAME LOBBY (ゲーム後に戻る画面) -->
+  <div id="game-lobby" class="screen">
+    <div style="text-align:center">
+      <div class="logo" style="font-size:2.8rem;margin-bottom:0.2rem">TETRIX</div>
+      <div class="lobby-player-name" id="gl-player-name"></div>
+    </div>
+    <div class="game-lobby-card">
+      <h2>▸ PREVIOUS ROOM</h2>
+      <div id="prev-room-banner" class="prev-room-banner" style="display:none">
+        <div>
+          <div class="prev-room-label">LAST ROOM</div>
+          <div class="prev-room-id" id="prev-room-id-display"></div>
+        </div>
+        <button class="btn btn-primary" style="width:auto;padding:0.5rem 1.2rem;margin:0" onclick="rejoinPrevRoom()">REJOIN ▶</button>
+      </div>
+      <h2>▸ OPEN ROOMS</h2>
+      <div class="rooms-list" id="rooms-list"><div class="no-rooms">No open rooms</div></div>
+      <button class="btn btn-secondary" style="margin-bottom:0.5rem" onclick="refreshRooms()">↺ REFRESH</button>
+    </div>
+    <div class="game-lobby-card" style="padding:1.5rem 2.5rem">
+      <h2>▸ CREATE NEW ROOM</h2>
+      <div style="display:flex;gap:0.6rem;align-items:center">
+        <input type="text" id="gl-room-id-input" placeholder="Custom ID (optional)" maxlength="6" style="flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(0,245,255,0.2);border-radius:6px;padding:0.6rem 0.8rem;color:var(--neon-cyan);font-family:'Share Tech Mono',monospace;font-size:0.9rem;outline:none;text-transform:uppercase">
+        <button class="btn btn-primary" style="width:auto;padding:0.6rem 1.2rem;margin:0" onclick="glCreateRoom()">CREATE</button>
+      </div>
+      <div style="margin-top:0.8rem;display:flex;gap:0.6rem;align-items:center">
+        <input type="text" id="gl-join-id-input" placeholder="Room ID to join" maxlength="6" style="flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(0,245,255,0.2);border-radius:6px;padding:0.6rem 0.8rem;color:var(--neon-cyan);font-family:'Share Tech Mono',monospace;font-size:0.9rem;outline:none;text-transform:uppercase">
+        <button class="btn btn-secondary" style="width:auto;padding:0.6rem 1.2rem;margin:0" onclick="glJoinRoom()">JOIN</button>
+      </div>
+      <div class="error-msg" id="gl-error"></div>
+    </div>
+    <button class="btn btn-danger" style="width:auto;padding:0.5rem 1.5rem" onclick="glBackToTitle()">← CHANGE NAME</button>
+  </div>
+
   <!-- WAITING ROOM -->
   <div id="waiting" class="screen">
     <div class="waiting-card">
@@ -370,14 +459,15 @@
   <!-- GAME -->
   <div id="game" class="screen">
     <div id="pixi-container"></div>
-    <!-- Chat: left overlay, no background, input at bottom -->
-    <div id="chat-panel">
-      <div id="chat-input-row">
-        <input type="text" id="chat-input" placeholder="Chat..." maxlength="100">
-        <button id="chat-send" onclick="sendChat()">▶</button>
-      </div>
-      <div id="chat-messages"></div>
-    </div>
+  </div>
+</div>
+
+<!-- Global Chat Panel (visible on all screens) -->
+<div id="chat-panel">
+  <div id="chat-messages"></div>
+  <div id="chat-input-row">
+    <input type="text" id="chat-input" placeholder="Chat..." maxlength="100">
+    <button id="chat-send" onclick="sendChat()">▶</button>
   </div>
 </div>
 
