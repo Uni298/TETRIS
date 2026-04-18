@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TETRIX ONLINE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<style>
+  :root {
+    --neon-cyan: #00f5ff;
+    --neon-pink: #ff006e;
+    --neon-yellow: #ffbe0b;
+    --neon-green: #06d6a0;
+    --dark-bg: #030712;
+    --dark-panel: #0a0f1e;
+    --border-glow: 0 0 10px var(--neon-cyan), 0 0 20px rgba(0,245,255,0.3);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--dark-bg);
+    color: #fff;
+    font-family: 'Share Tech Mono', monospace;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+  }
+  /* No scanline overlay */
+  #screens { width: 100%; height: 100%; }
+  .screen { display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+  .screen.active { display: flex; }
+
+  /* LOBBY */
+  #lobby {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
+  }
+  .logo {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 5rem;
+    font-weight: 900;
+    letter-spacing: 0.2em;
+    background: linear-gradient(135deg, var(--neon-cyan), var(--neon-pink));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
+    filter: drop-shadow(0 0 20px rgba(0,245,255,0.5));
+    margin-bottom: 0.5rem;
+    animation: logoGlow 2s ease-in-out infinite alternate;
+  }
+  @keyframes logoGlow {
+    from { filter: drop-shadow(0 0 20px rgba(0,245,255,0.5)); }
+    to { filter: drop-shadow(0 0 40px rgba(255,0,110,0.6)); }
+  }
+  .subtitle {
+    color: var(--neon-cyan);
+    letter-spacing: 0.5em;
+    font-size: 0.9rem;
+    margin-bottom: 3rem;
+    opacity: 0.7;
+  }
+  .lobby-card {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2.5rem;
+    width: 420px;
+    box-shadow: var(--border-glow), inset 0 0 30px rgba(0,245,255,0.05);
+  }
+  .lobby-card h2 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--neon-cyan);
+    font-size: 1.2rem;
+    margin-bottom: 1.5rem;
+    letter-spacing: 0.2em;
+  }
+  .input-group { margin-bottom: 1.2rem; }
+  .input-group label { display: block; color: rgba(255,255,255,0.5); font-size: 0.8rem; letter-spacing: 0.2em; margin-bottom: 0.5rem; }
+  .input-group input {
+    width: 100%;
+    background: rgba(0,0,0,0.5);
+    border: 1px solid rgba(0,245,255,0.2);
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    color: var(--neon-cyan);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .input-group input:focus {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 10px rgba(0,245,255,0.3);
+  }
+  .btn {
+    width: 100%;
+    padding: 0.9rem;
+    border: none;
+    border-radius: 6px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    cursor: pointer;
+    transition: all 0.3s;
+    margin-bottom: 0.8rem;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--neon-cyan), #0080ff);
+    color: #000;
+  }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0,245,255,0.4); }
+  .btn-secondary {
+    background: transparent;
+    border: 1px solid var(--neon-pink);
+    color: var(--neon-pink);
+  }
+  .btn-secondary:hover { background: rgba(255,0,110,0.1); box-shadow: 0 0 15px rgba(255,0,110,0.3); }
+  .btn-danger {
+    background: linear-gradient(135deg, var(--neon-pink), #8b0000);
+    color: #fff;
+  }
+  .divider { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 1.5rem 0; }
+  .error-msg { color: var(--neon-pink); font-size: 0.8rem; margin-top: 0.5rem; text-align: center; min-height: 1.2em; }
+
+  /* WAITING ROOM */
+  #waiting {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
+  }
+  .waiting-card {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2.5rem;
+    width: 500px;
+    text-align: center;
+  }
+  .room-id-display {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2.5rem;
+    color: var(--neon-yellow);
+    letter-spacing: 0.5em;
+    margin: 1rem 0;
+    text-shadow: 0 0 20px rgba(255,190,11,0.5);
+  }
+  .player-list { margin: 1.5rem 0; text-align: left; }
+  .player-item {
+    display: flex; align-items: center; gap: 1rem;
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.5rem;
+    background: rgba(0,0,0,0.3);
+    border-radius: 6px;
+    border-left: 3px solid var(--neon-cyan);
+  }
+  .player-avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--neon-cyan), var(--neon-pink));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; color: #000; font-size: 0.9rem;
+  }
+  .host-badge { background: var(--neon-yellow); color: #000; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.7rem; font-family: 'Orbitron', sans-serif; }
+  .wait-status { color: rgba(255,255,255,0.4); font-size: 0.85rem; margin: 1rem 0; }
+
+  /* GAME SCREEN */
+  #game {
+    flex-direction: row;
+    align-items: stretch;
+    background: var(--dark-bg);
+    position: relative;
+  }
+
+  /* CHAT — left side, overlay on pixi, minimal */
+  #chat-panel {
+    position: absolute;
+    left: 0;
+    bottom: 0;
+    width: 200px;
+    z-index: 50;
+    display: flex;
+    flex-direction: column-reverse; /* input at bottom, messages above */
+    padding: 0.6rem;
+    pointer-events: none;
+  }
+  #chat-input-row {
+    display: flex;
+    gap: 0.3rem;
+    pointer-events: all;
+    margin-top: 0.4rem;
+  }
+  #chat-input {
+    flex: 1;
+    background: rgba(0,0,0,0.6);
+    border: 1px solid rgba(0,245,255,0.18);
+    border-radius: 4px;
+    padding: 0.35rem 0.55rem;
+    color: rgba(255,255,255,0.9);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.75rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  #chat-input:focus { border-color: rgba(0,245,255,0.5); }
+  #chat-send {
+    background: rgba(0,245,255,0.15);
+    border: 1px solid rgba(0,245,255,0.25);
+    border-radius: 4px;
+    padding: 0.35rem 0.55rem;
+    color: var(--neon-cyan);
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 700;
+    pointer-events: all;
+    transition: background 0.2s;
+  }
+  #chat-send:hover { background: rgba(0,245,255,0.25); }
+  /* Messages: no background, white text only, newest at bottom of list (top of column-reverse) */
+  #chat-messages {
+    max-height: 180px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 2px;
+    pointer-events: none;
+  }
+  .chat-msg {
+    color: rgba(255,255,255,0.82);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    word-break: break-word;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.8);
+    animation: chatFadeIn 0.2s ease;
+  }
+  @keyframes chatFadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .chat-msg .chat-name { color: rgba(0,245,255,0.85); font-weight: 700; }
+  .chat-msg.system { color: rgba(255,255,255,0.28); font-style: italic; font-size: 0.68rem; }
+
+  #pixi-container { flex: 1; position: relative; overflow: hidden; }
+  #pixi-container canvas { display: block; position: relative; z-index: 1; }
+
+  /* SETTINGS */
+  #settings-btn {
+    position: fixed;
+    top: 1rem; right: 1rem;
+    z-index: 1000;
+    background: transparent;
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 6px;
+    padding: 0.5rem 0.8rem;
+    color: var(--neon-cyan);
+    cursor: pointer;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.8rem;
+    transition: all 0.3s;
+  }
+  #settings-btn:hover { background: rgba(0,245,255,0.1); }
+  #settings-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.8);
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+  }
+  #settings-modal.open { display: flex; }
+  .settings-card {
+    background: var(--dark-panel);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2rem;
+    width: 400px;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .settings-card h2 { font-family: 'Orbitron', sans-serif; color: var(--neon-cyan); margin-bottom: 1.5rem; letter-spacing: 0.2em; }
+  .settings-row { margin-bottom: 1.2rem; }
+  .settings-row label { display: block; color: rgba(255,255,255,0.6); font-size: 0.8rem; letter-spacing: 0.1em; margin-bottom: 0.4rem; }
+  .settings-row input[type=range] { width: 100%; accent-color: var(--neon-cyan); }
+  .settings-row select {
+    width: 100%;
+    background: rgba(0,0,0,0.5);
+    border: 1px solid rgba(0,245,255,0.2);
+    border-radius: 4px;
+    padding: 0.5rem;
+    color: var(--neon-cyan);
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .settings-val { color: var(--neon-yellow); font-size: 0.85rem; float: right; }
+
+  /* RESULT */
+  #result-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 3000;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+  }
+  #result-overlay.open { display: flex; }
+  .result-card {
+    background: var(--dark-panel);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 16px;
+    padding: 3rem;
+    text-align: center;
+    min-width: 400px;
+    animation: resultIn 0.5s ease-out;
+  }
+  @keyframes resultIn {
+    from { transform: scale(0.5) rotate(-10deg); opacity: 0; }
+    to { transform: scale(1) rotate(0deg); opacity: 1; }
+  }
+  .result-title { font-family: 'Orbitron', sans-serif; font-size: 2rem; margin-bottom: 0.5rem; }
+  .result-winner { font-size: 1.5rem; color: var(--neon-yellow); margin: 1rem 0; }
+  .result-scores { text-align: left; margin: 1.5rem 0; }
+  .result-score-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+</style>
+</head>
+<body>
+<div id="screens">
+  <!-- LOBBY -->
+  <div id="lobby" class="screen active">
+    <div class="logo">TETRIX</div>
+    <div class="subtitle">ONLINE MULTIPLAYER</div>
+    <div class="lobby-card">
+      <h2>▸ PLAYER SETUP</h2>
+      <div class="input-group">
+        <label>YOUR NAME</label>
+        <input type="text" id="player-name" placeholder="Enter name..." maxlength="16">
+      </div>
+      <button class="btn btn-primary" onclick="createRoom()">CREATE ROOM</button>
+      <hr class="divider">
+      <div class="input-group">
+        <label>ROOM ID</label>
+        <input type="text" id="room-id-input" placeholder="XXXXXX" maxlength="6" style="text-transform:uppercase">
+      </div>
+      <button class="btn btn-secondary" onclick="joinRoom()">JOIN ROOM</button>
+      <div class="error-msg" id="lobby-error"></div>
+    </div>
+  </div>
+
+  <!-- WAITING ROOM -->
+  <div id="waiting" class="screen">
+    <div class="waiting-card">
+      <h2 style="font-family:'Orbitron',sans-serif;color:var(--neon-cyan);letter-spacing:0.2em;margin-bottom:0.5rem;">WAITING ROOM</h2>
+      <div style="color:rgba(255,255,255,0.4);font-size:0.8rem;margin-bottom:0.5rem;">ROOM ID</div>
+      <div class="room-id-display" id="room-id-display">------</div>
+      <div style="color:rgba(255,255,255,0.5);font-size:0.75rem;margin-bottom:1.5rem;">Share this code with friends (max 3 players)</div>
+      <div class="player-list" id="player-list"></div>
+      <div class="wait-status" id="wait-status">Waiting for players...</div>
+      <button class="btn btn-primary" id="start-btn" onclick="startGame()" style="display:none">START GAME</button>
+      <button class="btn btn-secondary" onclick="leaveRoom()" style="margin-top:0.5rem">LEAVE ROOM</button>
+    </div>
+  </div>
+
+  <!-- GAME -->
+  <div id="game" class="screen">
+    <div id="pixi-container"></div>
+    <!-- Chat: left overlay, no background, input at bottom -->
+    <div id="chat-panel">
+      <div id="chat-input-row">
+        <input type="text" id="chat-input" placeholder="Chat..." maxlength="100">
+        <button id="chat-send" onclick="sendChat()">▶</button>
+      </div>
+      <div id="chat-messages"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings button (shown in game) -->
+<button id="settings-btn" onclick="toggleSettings()" style="display:none">⚙ SETTINGS</button>
+
+<!-- Settings Modal -->
+<div id="settings-modal">
+  <div class="settings-card">
+    <h2>⚙ GRAPHICS</h2>
+    <div class="settings-row">
+      <label>GHOST PIECE OPACITY <span class="settings-val" id="ghost-val">40%</span></label>
+      <input type="range" id="ghost-opacity" min="0" max="100" value="40" oninput="updateSetting('ghost',this.value)">
+    </div>
+    <div class="settings-row">
+      <label>QUALITY <span class="settings-val" id="quality-val">ULTRA</span></label>
+      <select id="quality-select" onchange="updateSetting('quality',this.value)">
+        <option value="low">LOW</option>
+        <option value="medium">MEDIUM</option>
+        <option value="high">HIGH</option>
+        <option value="ultra" selected>ULTRA (Immersive)</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>PARTICLE EFFECTS</label>
+      <select id="particles-select" onchange="updateSetting('particles',this.value)">
+        <option value="off">OFF</option>
+        <option value="low">LOW</option>
+        <option value="high" selected>HIGH</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>BOARD SHAKE</label>
+      <select id="shake-select" onchange="updateSetting('shake',this.value)">
+        <option value="off">OFF</option>
+        <option value="on" selected>ON</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>SFX VOLUME <span class="settings-val" id="sfx-val">70%</span></label>
+      <input type="range" id="sfx-volume" min="0" max="100" value="70" oninput="updateSetting('sfx',this.value)">
+    </div>
+    <div class="settings-row">
+      <label>TILT ON SPIN</label>
+      <select id="tilt-select" onchange="updateSetting('tilt',this.value)">
+        <option value="off">OFF</option>
+        <option value="on" selected>ON</option>
+      </select>
+    </div>
+    <button class="btn btn-primary" onclick="toggleSettings()">CLOSE</button>
+  </div>
+</div>
+
+<!-- Result Overlay -->
+<div id="result-overlay">
+  <div class="result-card">
+    <div class="result-title" id="result-title">GAME OVER</div>
+    <div class="result-winner" id="result-winner"></div>
+    <div class="result-scores" id="result-scores"></div>
+    <button class="btn btn-primary" onclick="backToLobby()">BACK TO LOBBY</button>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
