@@ -13,7 +13,19 @@ const rooms = {};
 const lastRoom = {}; // name -> roomId
 
 function createRoom(roomId) {
-  rooms[roomId] = { players: [], started: false, host: null, chat: [], bagSeed: Math.floor(Math.random() * 1000000) };
+  rooms[roomId] = {
+    players: [], started: false, host: null, chat: [],
+    bagSeed: Math.floor(Math.random() * 1000000),
+    mutationMode: false, mutationSeed: 0,
+    // Host-configurable game settings
+    roomSettings: {
+      mutationRate: 60,      // % chance of mutation (0-100)
+      gravityBase: 1000,     // ms per drop at level 1
+      gravityDec: 80,        // ms decrease per level
+      gravityMin: 50,        // minimum ms per drop
+      lockDelay: 1000,       // lock delay in ms
+    }
+  };
 }
 function getRoom(roomId) { return rooms[roomId]; }
 
@@ -48,7 +60,7 @@ io.on('connection', (socket) => {
     socket.join(roomId); socket.roomId = roomId; socket.playerName = name;
     lastRoom[name] = roomId;
     socket.emit('room_created', { roomId, players: room.players });
-    io.to(roomId).emit('room_update', { players: room.players, host: room.host, started: room.started });
+    io.to(roomId).emit('room_update', { players: room.players, host: room.host, started: room.started, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
   });
 
   socket.on('join_room', ({ roomId, name }) => {
@@ -60,7 +72,7 @@ io.on('connection', (socket) => {
     socket.join(roomId); socket.roomId = roomId; socket.playerName = name;
     lastRoom[name] = roomId;
     socket.emit('room_joined', { roomId, players: room.players });
-    io.to(roomId).emit('room_update', { players: room.players, host: room.host, started: room.started });
+    io.to(roomId).emit('room_update', { players: room.players, host: room.host, started: room.started, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
   });
 
   socket.on('rejoin_last_room', ({ name }) => {
@@ -73,8 +85,29 @@ io.on('connection', (socket) => {
     room.players.push({ id: socket.id, name, board: null, score: 0, lines: 0, level: 1, alive: true, combo: 0, b2b: false });
     socket.join(roomId); socket.roomId = roomId; socket.playerName = name;
     // rejoin_resultにhostも含める
-    socket.emit('rejoin_result', { success: true, roomId, players: room.players, host: room.host });
-    io.to(roomId).emit('room_update', { players: room.players, host: room.host, started: room.started });
+    socket.emit('rejoin_result', { success: true, roomId, players: room.players, host: room.host, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
+    io.to(roomId).emit('room_update', { players: room.players, host: room.host, started: room.started, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
+  });
+
+  socket.on('set_mutation', ({ enabled, seed }) => {
+    const room = getRoom(socket.roomId); if (!room) return;
+    if (socket.id !== room.host) return;
+    room.mutationMode = !!enabled;
+    room.mutationSeed = seed || 0;
+    io.to(socket.roomId).emit('mutation_update', { enabled: room.mutationMode, seed: room.mutationSeed });
+    io.to(socket.roomId).emit('room_update', { players: room.players, host: room.host, started: room.started, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
+  });
+
+  socket.on('set_room_settings', (newSettings) => {
+    const room = getRoom(socket.roomId); if (!room) return;
+    if (socket.id !== room.host) return;
+    // Validate and clamp values
+    if (newSettings.mutationRate !== undefined) room.roomSettings.mutationRate = Math.max(0, Math.min(100, parseInt(newSettings.mutationRate) || 60));
+    if (newSettings.gravityBase !== undefined) room.roomSettings.gravityBase = Math.max(100, Math.min(3000, parseInt(newSettings.gravityBase) || 1000));
+    if (newSettings.gravityDec !== undefined) room.roomSettings.gravityDec = Math.max(0, Math.min(200, parseInt(newSettings.gravityDec) || 80));
+    if (newSettings.gravityMin !== undefined) room.roomSettings.gravityMin = Math.max(20, Math.min(500, parseInt(newSettings.gravityMin) || 50));
+    if (newSettings.lockDelay !== undefined) room.roomSettings.lockDelay = Math.max(200, Math.min(3000, parseInt(newSettings.lockDelay) || 1000));
+    io.to(socket.roomId).emit('room_update', { players: room.players, host: room.host, started: room.started, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
   });
 
   socket.on('start_game', () => {
@@ -83,8 +116,9 @@ io.on('connection', (socket) => {
     if (room.players.length < 2) { socket.emit('error', { msg: 'Need at least 2 players' }); return; }
     room.started = true;
     room.bagSeed = Math.floor(Math.random() * 1000000);
+    if (room.mutationMode && !room.mutationSeed) room.mutationSeed = Math.floor(Math.random() * 1000000);
     room.players.forEach(p => { p.board = null; p.score = 0; p.lines = 0; p.level = 1; p.alive = true; p.combo = 0; p.b2b = false; });
-    io.to(socket.roomId).emit('game_start', { players: room.players, bagSeed: room.bagSeed });
+    io.to(socket.roomId).emit('game_start', { players: room.players, bagSeed: room.bagSeed, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
   });
 
   socket.on('piece_update', ({ currentPiece }) => {
@@ -138,7 +172,7 @@ io.on('connection', (socket) => {
     socket.join(rid); socket.roomId = rid; socket.playerName = name;
     lastRoom[name] = rid;
     socket.emit('room_joined', { roomId: rid, players: room.players });
-    io.to(rid).emit('room_update', { players: room.players, host: room.host, started: room.started });
+    io.to(rid).emit('room_update', { players: room.players, host: room.host, started: room.started, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
   });
 
   socket.on('game_over', () => {
@@ -183,7 +217,7 @@ io.on('connection', (socket) => {
     if (room.players.length === 0) { delete rooms[socket.roomId]; socket.roomId = null; return; }
     if (room.host === socket.id) room.host = room.players[0].id;
     io.to(socket.roomId).emit('player_left', { id: socket.id });
-    io.to(socket.roomId).emit('room_update', { players: room.players, host: room.host, started: room.started });
+    io.to(socket.roomId).emit('room_update', { players: room.players, host: room.host, started: room.started, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
     socket.roomId = null;
   });
 
@@ -193,7 +227,7 @@ io.on('connection', (socket) => {
     if (room.players.length === 0) { delete rooms[socket.roomId]; return; }
     if (room.host === socket.id) room.host = room.players[0].id;
     io.to(socket.roomId).emit('player_left', { id: socket.id });
-    io.to(socket.roomId).emit('room_update', { players: room.players, host: room.host, started: room.started });
+    io.to(socket.roomId).emit('room_update', { players: room.players, host: room.host, started: room.started, mutationMode: room.mutationMode, mutationSeed: room.mutationSeed, roomSettings: room.roomSettings });
     if (room.started) {
       const alive = room.players.filter(p => p.alive);
       if (alive.length <= 1) {

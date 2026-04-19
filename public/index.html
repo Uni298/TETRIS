@@ -383,29 +383,270 @@
   .result-winner { font-size: 1.5rem; color: var(--neon-yellow); margin: 1rem 0; }
   .result-scores { text-align: left; margin: 1.5rem 0; }
   .result-score-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+
+  /* NAME PROMPT MODAL */
+  #name-modal {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
+    z-index: 9000;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+  }
+  #name-modal.hidden { display: none; }
+  .name-modal-logo {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 4rem;
+    font-weight: 900;
+    background: linear-gradient(135deg, var(--neon-cyan), var(--neon-pink));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 20px rgba(0,245,255,0.5));
+    margin-bottom: 0.4rem;
+    animation: logoGlow 2s ease-in-out infinite alternate;
+  }
+  .name-modal-sub {
+    color: var(--neon-cyan);
+    letter-spacing: 0.5em;
+    font-size: 0.8rem;
+    margin-bottom: 2.5rem;
+    opacity: 0.7;
+  }
+  .name-modal-card {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2.5rem;
+    width: 380px;
+    box-shadow: 0 0 10px var(--neon-cyan), 0 0 20px rgba(0,245,255,0.3), inset 0 0 30px rgba(0,245,255,0.05);
+  }
+  .name-modal-card h2 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--neon-cyan);
+    font-size: 1.1rem;
+    margin-bottom: 1.5rem;
+    letter-spacing: 0.2em;
+  }
+
+  /* MUTATION MODE BADGE */
+  .mutation-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #ff006e, #8b0000);
+    color: #fff;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 4px;
+    letter-spacing: 0.1em;
+    animation: mutBadgePulse 1.5s ease-in-out infinite alternate;
+  }
+  @keyframes mutBadgePulse {
+    from { box-shadow: 0 0 4px rgba(255,0,110,0.4); }
+    to   { box-shadow: 0 0 14px rgba(255,0,110,0.9); }
+  }
+
+  /* MUTATION TOGGLE in waiting room */
+  .mutation-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.7rem 1rem;
+    background: rgba(255,0,110,0.06);
+    border: 1px solid rgba(255,0,110,0.2);
+    border-radius: 8px;
+    margin: 1rem 0;
+  }
+  .mutation-row label {
+    color: #ff006e;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.75rem;
+    letter-spacing: 0.15em;
+  }
+  .toggle-switch {
+    position: relative;
+    width: 46px;
+    height: 24px;
+    cursor: pointer;
+  }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,0,110,0.3);
+    border-radius: 24px;
+    transition: all 0.3s;
+  }
+  .toggle-switch input:checked + .toggle-track {
+    background: rgba(255,0,110,0.4);
+    border-color: #ff006e;
+    box-shadow: 0 0 8px rgba(255,0,110,0.5);
+  }
+  .toggle-knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    background: rgba(255,255,255,0.6);
+    border-radius: 50%;
+    transition: transform 0.3s;
+  }
+  .toggle-switch input:checked ~ .toggle-knob { transform: translateX(22px); background: #ff006e; }
+
+  /* HOST SETTINGS PANEL */
+  .host-settings-panel {
+    background: rgba(0,245,255,0.04);
+    border: 1px solid rgba(0,245,255,0.15);
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 0.8rem 0;
+    text-align: left;
+  }
+  .host-settings-panel h3 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.7rem;
+    color: var(--neon-cyan);
+    letter-spacing: 0.18em;
+    margin-bottom: 0.8rem;
+    opacity: 0.85;
+  }
+  .hs-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.65rem;
+    gap: 0.6rem;
+  }
+  .hs-row label {
+    color: rgba(255,255,255,0.55);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    min-width: 110px;
+    flex-shrink: 0;
+  }
+  .hs-row input[type=range] {
+    flex: 1;
+    accent-color: var(--neon-cyan);
+    height: 4px;
+  }
+  .hs-val {
+    color: var(--neon-yellow);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.75rem;
+    min-width: 48px;
+    text-align: right;
+  }
+  .settings-view-panel {
+    background: rgba(0,245,255,0.03);
+    border: 1px solid rgba(0,245,255,0.1);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin: 0.8rem 0;
+    text-align: left;
+  }
+  .settings-view-panel h3 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    color: rgba(0,245,255,0.5);
+    letter-spacing: 0.18em;
+    margin-bottom: 0.6rem;
+  }
+  .settings-view-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: rgba(255,255,255,0.45);
+    padding: 0.25rem 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .settings-view-row:last-child { border-bottom: none; }
+
+  /* MOBILE TOGGLE BUTTON */
+  #mobile-toggle-btn {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    z-index: 9999;
+    background: rgba(10,15,30,0.92);
+    border: 1px solid rgba(0,245,255,0.4);
+    border-radius: 8px;
+    padding: 0.45rem 0.85rem;
+    color: var(--neon-cyan);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(0,245,255,0.2);
+    transition: all 0.2s;
+    user-select: none;
+  }
+  #mobile-toggle-btn.on {
+    border-color: var(--neon-green);
+    color: var(--neon-green);
+    box-shadow: 0 0 12px rgba(6,214,160,0.35);
+  }
+  #mobile-toggle-btn:active { transform: scale(0.94); }
+
+  /* SOFT DROP BUTTON (mobile only, bottom-right during game) */
+  #mobile-softdrop-btn {
+    display: none;
+    position: fixed;
+    bottom: 18px;
+    right: 14px;
+    z-index: 5000;
+    width: 68px;
+    height: 68px;
+    background: rgba(10,15,30,0.88);
+    border: 2px solid rgba(0,245,255,0.5);
+    border-radius: 50%;
+    color: var(--neon-cyan);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-align: center;
+    cursor: pointer;
+    box-shadow: 0 0 14px rgba(0,245,255,0.25);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    gap: 2px;
+  }
+  #mobile-softdrop-btn .sd-arrow { font-size: 1.2rem; line-height: 1; }
+  #mobile-softdrop-btn.active-press {
+    background: rgba(0,245,255,0.18);
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 22px rgba(0,245,255,0.5);
+  }
 </style>
 </head>
 <body>
-<div id="screens">
-  <!-- LOBBY -->
-  <div id="lobby" class="screen active">
-    <div class="logo">TETRIX</div>
-    <div class="subtitle">ONLINE MULTIPLAYER</div>
-    <div class="lobby-card">
-      <h2>▸ PLAYER SETUP</h2>
-      <div class="input-group">
-        <label>YOUR NAME</label>
-        <input type="text" id="player-name" placeholder="Enter name..." maxlength="16">
-      </div>
-      <button class="btn btn-primary" onclick="createRoom()">CREATE ROOM</button>
-      <hr class="divider">
-      <div class="input-group">
-        <label>ROOM ID</label>
-        <input type="text" id="room-id-input" placeholder="XXXXXX" maxlength="6" style="text-transform:uppercase">
-      </div>
-      <button class="btn btn-secondary" onclick="joinRoom()">JOIN ROOM</button>
-      <div class="error-msg" id="lobby-error"></div>
+<!-- Name Prompt Modal (shown on first load) -->
+<div id="name-modal">
+  <div class="name-modal-logo">TETRIX</div>
+  <div class="name-modal-sub">ONLINE MULTIPLAYER</div>
+  <div class="name-modal-card">
+    <h2>▸ ENTER YOUR NAME</h2>
+    <div class="input-group">
+      <label>PLAYER NAME</label>
+      <input type="text" id="name-modal-input" placeholder="Enter name..." maxlength="16" autocomplete="off">
     </div>
+    <button class="btn btn-primary" onclick="submitNameModal()">ENTER LOBBY ▶</button>
+    <div class="error-msg" id="name-modal-error"></div>
+  </div>
+</div>
+
+<div id="screens">
+  <!-- LOBBY (legacy, hidden - redirect to game-lobby) -->
+  <div id="lobby" class="screen">
+    <div class="logo">TETRIX</div>
   </div>
 
   <!-- GAME LOBBY (ゲーム後に戻る画面) -->
@@ -451,6 +692,69 @@
       <div style="color:rgba(255,255,255,0.5);font-size:0.75rem;margin-bottom:1.5rem;">Share this code with friends (max 3 players)</div>
       <div class="player-list" id="player-list"></div>
       <div class="wait-status" id="wait-status">Waiting for players...</div>
+
+      <!-- MUTATION TOGGLE (host only) -->
+      <div id="mutation-row-wrap" class="mutation-row" style="display:none">
+        <label>⚡ MUTATION MODE</label>
+        <label class="toggle-switch">
+          <input type="checkbox" id="mutation-toggle" onchange="toggleMutation(this.checked)">
+          <div class="toggle-track"></div>
+          <div class="toggle-knob"></div>
+        </label>
+      </div>
+
+      <!-- HOST SETTINGS PANEL -->
+      <div id="host-settings-wrap" style="display:none">
+        <div class="host-settings-panel">
+          <h3>⚙ GAME SETTINGS</h3>
+
+          <div class="hs-row">
+            <label>⚡ Mutation Rate</label>
+            <input type="range" id="mutation-rate-input" min="0" max="100" step="5" value="60"
+              oninput="document.getElementById('mutation-rate-val').textContent=this.value+'%';updateRoomSetting('mutationRate',this.value)">
+            <span class="hs-val" id="mutation-rate-val">60%</span>
+          </div>
+
+          <div class="hs-row">
+            <label>⏩ Start Speed</label>
+            <input type="range" id="gravity-base-input" min="200" max="3000" step="100" value="1000"
+              oninput="document.getElementById('gravity-base-val').textContent=this.value+'ms';updateRoomSetting('gravityBase',this.value)">
+            <span class="hs-val" id="gravity-base-val">1000ms</span>
+          </div>
+
+          <div class="hs-row">
+            <label>📈 Speed/Level</label>
+            <input type="range" id="gravity-dec-input" min="0" max="200" step="10" value="80"
+              oninput="document.getElementById('gravity-dec-val').textContent=this.value+'ms';updateRoomSetting('gravityDec',this.value)">
+            <span class="hs-val" id="gravity-dec-val">80ms</span>
+          </div>
+
+          <div class="hs-row">
+            <label>🔝 Max Speed</label>
+            <input type="range" id="gravity-min-input" min="20" max="500" step="10" value="50"
+              oninput="document.getElementById('gravity-min-val').textContent=this.value+'ms';updateRoomSetting('gravityMin',this.value)">
+            <span class="hs-val" id="gravity-min-val">50ms</span>
+          </div>
+
+          <div class="hs-row">
+            <label>🔒 Lock Delay</label>
+            <input type="range" id="lock-delay-input" min="200" max="3000" step="100" value="1000"
+              oninput="document.getElementById('lock-delay-val').textContent=this.value+'ms';updateRoomSetting('lockDelay',this.value)">
+            <span class="hs-val" id="lock-delay-val">1000ms</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- NON-HOST VIEW-ONLY SETTINGS -->
+      <div id="settings-view-wrap" style="display:none">
+        <div class="settings-view-panel">
+          <h3>⚙ GAME SETTINGS</h3>
+          <div id="settings-view-content">
+            <div class="settings-view-row"><span>Waiting for host settings...</span></div>
+          </div>
+        </div>
+      </div>
+
       <button class="btn btn-primary" id="start-btn" onclick="startGame()" style="display:none">START GAME</button>
       <button class="btn btn-secondary" onclick="leaveRoom()" style="margin-top:0.5rem">LEAVE ROOM</button>
     </div>
@@ -529,6 +833,15 @@
     <div class="result-scores" id="result-scores"></div>
     <button class="btn btn-primary" onclick="backToLobby()">BACK TO LOBBY</button>
   </div>
+</div>
+
+<!-- Mobile Controls Toggle (always visible corner) -->
+<button id="mobile-toggle-btn" onclick="toggleMobileControls()">📱 MOBILE<br>OFF</button>
+
+<!-- Soft Drop Button (game only, mobile ON) -->
+<div id="mobile-softdrop-btn">
+  <div class="sd-arrow">▼</div>
+  <div>SOFT<br>DROP</div>
 </div>
 
 <script src="game.js"></script>

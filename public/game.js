@@ -1,6 +1,7 @@
 // ===== TETRIX ONLINE =====
 
 // ---- Settings ----
+let mobileControlsEnabled = false; // Mobile controls toggle
 let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on'};
 function loadSettings(){try{const s=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_settings='));if(s)settings={...settings,...JSON.parse(decodeURIComponent(s.split('=')[1]))};}catch(e){}}
 function saveSettings(){document.cookie='tetrix_settings='+encodeURIComponent(JSON.stringify(settings))+'; max-age=31536000; path=/';}
@@ -26,6 +27,186 @@ function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
   document.getElementById('settings-btn').style.display=id==='game'?'block':'none';
+  // Mobile: show/hide soft drop button
+  const sdBtn=document.getElementById('mobile-softdrop-btn');
+  if(sdBtn)sdBtn.style.display=(mobileControlsEnabled&&id==='game')?'flex':'none';
+}
+
+// ---- Name Modal (initial screen) ----
+function getSavedName(){
+  try{const m=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_name='));return m?decodeURIComponent(m.split('=')[1].trim()):''}catch(e){return '';}
+}
+function saveName(name){
+  document.cookie='tetrix_name='+encodeURIComponent(name)+'; max-age=31536000; path=/';
+}
+function submitNameModal(){
+  const inp=document.getElementById('name-modal-input');
+  const name=inp.value.trim();
+  if(!name){document.getElementById('name-modal-error').textContent='Please enter a name';return;}
+  myName=name;
+  saveName(name);
+  document.getElementById('name-modal').classList.add('hidden');
+  showGameLobby(null);
+}
+
+// ---- Mutation Mode ----
+let mutationMode=false;
+let mutationSeed=0;
+let roomSettings={mutationRate:60,gravityBase:1000,gravityDec:80,gravityMin:50,lockDelay:1000};
+
+function toggleMutation(enabled){
+  if(!isHost)return;
+  mutationMode=enabled;
+  socket.emit('set_mutation',{enabled,seed:mutationMode?Math.floor(Math.random()*1000000):0});
+}
+
+socket.on('mutation_update',({enabled,seed})=>{
+  mutationMode=enabled;
+  mutationSeed=seed;
+  const row=document.getElementById('mutation-row-wrap');
+  if(row){
+    const cb=document.getElementById('mutation-toggle');
+    if(cb)cb.checked=enabled;
+  }
+  addChatSystem(enabled?'⚡ MUTATION MODE: ON':'⚡ MUTATION MODE: OFF');
+});
+
+// ---- Seeded RNG for mutation (deterministic per piece index) ----
+function mutationRng(seed){
+  let s=seed>>>0;
+  return function(){s=(Math.imul(s,1664525)+1013904223)>>>0;return s/0x100000000;};
+}
+
+// Global piece counter for deterministic mutation seed
+let _pieceCounter=0;
+
+// Apply mutation to a piece shape (returns new shape matrix or null if no mutation)
+function applyMutation(type, shapeMatrix){
+  if(!mutationMode) return null;
+  // Each piece gets a deterministic mutation based on global piece index + mutationSeed
+  const rng = mutationRng(mutationSeed ^ (_pieceCounter * 6364136223846793005 + 1442695040888963407 | 0));
+  _pieceCounter++;
+
+  // Use roomSettings.mutationRate (0-100) as the threshold
+  const threshold = (roomSettings.mutationRate !== undefined ? roomSettings.mutationRate : 60) / 100;
+  if(rng() > threshold) return null;
+
+  // Deep copy the shape
+  const shape = shapeMatrix.map(r=>[...r]);
+  // Collect all filled cells and empty cells
+  const filled=[];
+  const empty=[];
+  for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
+    if(shape[r][c])filled.push([r,c]);
+    else empty.push([r,c]);
+  }
+  if(filled.length===0) return null;
+
+  // Pick mutation type by weighted random
+  // 10% stack (double vertical), 20% remove1, 20% remove2, 20% add1, 10% remove3, 20% move1
+  const roll=rng();
+  // stack:0-0.10, remove1:0.10-0.30, remove2:0.30-0.50, add1:0.50-0.70, remove3:0.70-0.80, move1:0.80-1.0
+  if(roll<0.10){
+    // STACK: same piece stacked vertically (two pieces fused)
+    // Find the bottom-most row of filled cells
+    const maxR=Math.max(...filled.map(([r])=>r));
+    // Add the same shape directly below
+    const newShape=shape.map(r=>[...r]);
+    for(const[r,c]of filled){
+      const nr=r+maxR+1;
+      // Expand shape if needed
+      while(newShape.length<=nr)newShape.push(Array(shape[0].length).fill(0));
+      newShape[nr][c]=1;
+    }
+    return newShape;
+  } else if(roll<0.30){
+    // REMOVE 1 block
+    if(filled.length<=1)return null;
+    const idx=Math.floor(rng()*filled.length);
+    const[r,c]=filled[idx];
+    shape[r][c]=0;
+    return shape;
+  } else if(roll<0.50){
+    // REMOVE 2 blocks
+    if(filled.length<=2)return null;
+    const idxA=Math.floor(rng()*filled.length);
+    let idxB=Math.floor(rng()*(filled.length-1));
+    if(idxB>=idxA)idxB++;
+    shape[filled[idxA][0]][filled[idxA][1]]=0;
+    shape[filled[idxB][0]][filled[idxB][1]]=0;
+    return shape;
+  } else if(roll<0.70){
+    // ADD 1 block (I-piece: make lowercase "i" by moving far-end block 2 cells ahead)
+    if(type==='I'){
+      const minC=Math.min(...filled.map(([,c])=>c));
+      const maxC=Math.max(...filled.map(([,c])=>c));
+      const minR=Math.min(...filled.map(([r])=>r));
+      const maxR=Math.max(...filled.map(([r])=>r));
+      const isHoriz=(maxC-minC)>(maxR-minR);
+      const newShape=shape.map(r=>[...r]);
+      if(isHoriz){
+        // Horizontal I: remove rightmost block, place it 2 further right -> [x][x][x][ ][x]
+        const row=filled.find(([,c])=>c===maxC)[0];
+        newShape[row][maxC]=0;
+        const destC=maxC+2;
+        while(newShape[row].length<=destC)newShape[row].push(0);
+        newShape[row][destC]=1;
+        const ml=Math.max(...newShape.map(r=>r.length));
+        for(const r2 of newShape)while(r2.length<ml)r2.push(0);
+      } else {
+        // Vertical I: remove bottom block, place it 2 further down
+        const col=filled.find(([r])=>r===maxR)[1];
+        newShape[maxR][col]=0;
+        const destR=maxR+2;
+        while(newShape.length<=destR)newShape.push(Array(newShape[0].length).fill(0));
+        newShape[destR][col]=1;
+      }
+      return newShape;
+    } else {
+      // Add 1 block adjacent to a random filled cell
+      if(empty.length===0)return null;
+      // Find empty cells adjacent to filled cells
+      const adjEmpty=[];
+      for(const[r,c]of filled){
+        for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){
+          const nr=r+dr,nc=c+dc;
+          if(nr>=0&&nr<shape.length&&nc>=0&&nc<shape[0].length&&!shape[nr][nc]){
+            adjEmpty.push([nr,nc]);
+          }
+        }
+      }
+      if(adjEmpty.length===0)return null;
+      const pick=adjEmpty[Math.floor(rng()*adjEmpty.length)];
+      shape[pick[0]][pick[1]]=1;
+      return shape;
+    }
+  } else if(roll<0.80){
+    // REMOVE 3 blocks
+    if(filled.length<=3)return null;
+    const toRemove=[];
+    const tmp=[...filled];
+    for(let i=0;i<3;i++){
+      const idx=Math.floor(rng()*tmp.length);
+      toRemove.push(tmp.splice(idx,1)[0]);
+    }
+    for(const[r,c]of toRemove)shape[r][c]=0;
+    return shape;
+  } else {
+    // MOVE 1 block to an adjacent empty cell
+    if(filled.length<=1)return null;
+    const idx=Math.floor(rng()*filled.length);
+    const[r,c]=filled[idx];
+    const dirs=[[-1,0],[1,0],[0,-1],[0,1]];
+    const validMoves=dirs.filter(([dr,dc])=>{
+      const nr=r+dr,nc=c+dc;
+      return nr>=0&&nr<shape.length&&nc>=0&&nc<shape[0].length&&!shape[nr][nc];
+    });
+    if(validMoves.length===0)return null;
+    const[dr,dc]=validMoves[Math.floor(rng()*validMoves.length)];
+    shape[r][c]=0;
+    shape[r+dr][c+dc]=1;
+    return shape;
+  }
 }
 
 // ---- Lobby ----
@@ -133,7 +314,9 @@ function rejoinPrevRoom(){
 
 function glBackToTitle(){
   myName='';roomId=null;_lastUsedRoomId=null;
-  showScreen('lobby');
+  // Show name modal again instead of old lobby
+  document.getElementById('name-modal').classList.remove('hidden');
+  document.getElementById('screens').querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
 }
 
 // game-lobbyのerrorはgl-errorに表示
@@ -147,32 +330,97 @@ socket.on('error',({msg})=>{
   }
 });
 
-socket.on('rejoin_result',({success,roomId:rid,players,host})=>{
+socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,mutationSeed:ms,roomSettings:rs})=>{
   if(!success){showScreen('lobby');return;}
   roomId=rid;roomPlayers=players;
   isHost=(socket.id===host);
+  if(mu!==undefined){mutationMode=mu;mutationSeed=ms||0;}
+  if(rs){roomSettings={...roomSettings,...rs};}
   document.getElementById('room-id-display').textContent=rid;
   updatePlayerList(players);
   document.getElementById('start-btn').style.display=isHost&&players.length>=2?'block':'none';
   document.getElementById('wait-status').textContent=players.length<2?'Waiting for players... (min 2)':`${players.length} players ready`;
+  const mrow=document.getElementById('mutation-row-wrap');
+  if(mrow)mrow.style.display=isHost?'flex':'none';
+  const cb=document.getElementById('mutation-toggle');if(cb)cb.checked=!!mu;
+  if(rs)updateRoomSettingsUI(rs);
+  const hostControls=document.getElementById('host-settings-wrap');
+  const viewOnly=document.getElementById('settings-view-wrap');
+  if(hostControls)hostControls.style.display=isHost?'block':'none';
+  if(viewOnly)viewOnly.style.display=!isHost&&rs?'block':'none';
   showScreen('waiting');
 });
 
-socket.on('room_created',({roomId:rid,players})=>{roomId=rid;_lastUsedRoomId=rid;roomPlayers=players;isHost=true;document.getElementById('room-id-display').textContent=rid;showScreen('waiting');updatePlayerList(players);});
-socket.on('room_joined',({roomId:rid,players})=>{roomId=rid;_lastUsedRoomId=rid;roomPlayers=players;document.getElementById('room-id-display').textContent=rid;showScreen('waiting');updatePlayerList(players);});
-socket.on('room_update',({players,host,started})=>{
+socket.on('room_created',({roomId:rid,players})=>{
+  roomId=rid;_lastUsedRoomId=rid;roomPlayers=players;isHost=true;
+  document.getElementById('room-id-display').textContent=rid;
+  showScreen('waiting');updatePlayerList(players);
+  document.getElementById('mutation-row-wrap').style.display='flex';
+  document.getElementById('host-settings-wrap').style.display='block';
+  document.getElementById('settings-view-wrap').style.display='none';
+  updateRoomSettingsUI(roomSettings);
+  // Push initial settings to server
+  socket.emit('set_room_settings', roomSettings);
+});
+socket.on('room_joined',({roomId:rid,players})=>{
+  roomId=rid;_lastUsedRoomId=rid;roomPlayers=players;isHost=false;
+  document.getElementById('room-id-display').textContent=rid;
+  showScreen('waiting');updatePlayerList(players);
+  document.getElementById('mutation-row-wrap').style.display='none';
+  document.getElementById('host-settings-wrap').style.display='none';
+});
+socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,roomSettings:rs})=>{
   roomPlayers=players;isHost=(socket.id===host);updatePlayerList(players);
   document.getElementById('start-btn').style.display=isHost&&players.length>=2?'block':'none';
   document.getElementById('wait-status').textContent=players.length<2?'Waiting for players... (min 2)':`${players.length} players ready`;
+  if(mu!==undefined){mutationMode=mu;mutationSeed=ms||0;const cb=document.getElementById('mutation-toggle');if(cb)cb.checked=mu;}
+  if(rs){roomSettings={...roomSettings,...rs};updateRoomSettingsUI(rs);}
+  // Show/hide host controls vs read-only view
+  const hostControls=document.getElementById('host-settings-wrap');
+  const viewOnlySettings=document.getElementById('settings-view-wrap');
+  if(hostControls)hostControls.style.display=isHost?'block':'none';
+  if(viewOnlySettings)viewOnlySettings.style.display=!isHost&&rs?'block':'none';
+  const mrow=document.getElementById('mutation-row-wrap');
+  if(mrow)mrow.style.display=isHost?'flex':'none';
 });
 socket.on('player_left',()=>addChatSystem('Player left'));
+
+function updateRoomSettingsUI(rs){
+  // Update host controls
+  const mr=document.getElementById('mutation-rate-input');if(mr){mr.value=rs.mutationRate??60;document.getElementById('mutation-rate-val').textContent=(rs.mutationRate??60)+'%';}
+  const gb=document.getElementById('gravity-base-input');if(gb){gb.value=rs.gravityBase??1000;document.getElementById('gravity-base-val').textContent=(rs.gravityBase??1000)+'ms';}
+  const gd=document.getElementById('gravity-dec-input');if(gd){gd.value=rs.gravityDec??80;document.getElementById('gravity-dec-val').textContent=(rs.gravityDec??80)+'ms';}
+  const gm=document.getElementById('gravity-min-input');if(gm){gm.value=rs.gravityMin??50;document.getElementById('gravity-min-val').textContent=(rs.gravityMin??50)+'ms';}
+  const ld=document.getElementById('lock-delay-input');if(ld){ld.value=rs.lockDelay??1000;document.getElementById('lock-delay-val').textContent=(rs.lockDelay??1000)+'ms';}
+  // Update view-only display
+  const vo=document.getElementById('settings-view-content');
+  if(vo&&rs){
+    const modeStr=mutationMode?`ON (${rs.mutationRate??60}%)`:'OFF';
+    const spd=rs.gravityBase??1000;
+    const spdLabel=spd>=1500?'SLOW':spd>=900?'NORMAL':spd>=500?'FAST':'VERY FAST';
+    vo.innerHTML=`<div class="settings-view-row"><span>⚡ Mutation</span><span style="color:var(--neon-cyan)">${modeStr}</span></div><div class="settings-view-row"><span>⏩ Speed</span><span style="color:var(--neon-yellow)">${spdLabel}</span></div><div class="settings-view-row"><span>🔒 Lock Delay</span><span style="color:var(--neon-yellow)">${rs.lockDelay??1000}ms</span></div>`;
+  }
+}
+
+function updateRoomSetting(key,val){
+  roomSettings[key]=parseInt(val)||0;
+  socket.emit('set_room_settings',{[key]:roomSettings[key]});
+  updateRoomSettingsUI(roomSettings);
+}
 
 function updatePlayerList(players){
   document.getElementById('player-list').innerHTML=players.map((p,i)=>`<div class="player-item"><div class="player-avatar">${p.name[0].toUpperCase()}</div><span>${p.name}</span>${i===0?'<span class="host-badge">HOST</span>':''}</div>`).join('');
 }
 
 // ---- Countdown then start ----
-socket.on('game_start',({players,bagSeed})=>{roomPlayers=players;showScreen('game');showCountdown(bagSeed,()=>initGame(players,bagSeed));});
+socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs})=>{
+  roomPlayers=players;
+  mutationMode=!!mu;
+  mutationSeed=ms||0;
+  if(rs)roomSettings={...roomSettings,...rs};
+  _pieceCounter=0;
+  showScreen('game');showCountdown(bagSeed,()=>initGame(players,bagSeed));
+});
 
 const ANIM_SPEED = 0.75;
 
@@ -331,6 +579,24 @@ class Bag{
   next(){if(!this.bag.length)this.fill();return this.bag.pop();}
 }
 
+// ---- Matrix rotation helper (for mutated piece shapes) ----
+function rotateMatrix(matrix, dir) {
+  // dir: +1 = clockwise, -1 = counter-clockwise
+  const rows = matrix.length;
+  const cols = Math.max(...matrix.map(r => r.length));
+  // Pad all rows to same length
+  const padded = matrix.map(r => { const a = [...r]; while(a.length < cols) a.push(0); return a; });
+  if (dir > 0) {
+    // CW: transpose then reverse each row
+    const T = Array.from({length: cols}, (_,c) => Array.from({length: rows}, (_,r) => padded[r][c]));
+    return T.map(r => r.reverse());
+  } else {
+    // CCW: reverse each row then transpose
+    const rev = padded.map(r => [...r].reverse());
+    return Array.from({length: cols}, (_,c) => Array.from({length: rows}, (_,r) => rev[r][c]));
+  }
+}
+
 // ---- Game State ----
 let gameState=null,gameApp=null,renderer=null;
 
@@ -341,12 +607,13 @@ class TetrisGame{
   constructor(bagSeed){
     this.board=Array.from({length:ROWS+HIDDEN},()=>Array(COLS).fill(0));
     this.bag=new Bag(bagSeed);this.nextQueue=[];
-    for(let i=0;i<6;i++)this.nextQueue.push(this.bag.next());
-    this.holdPiece=null;this.holdUsed=false;
+    // Fill nextQueue with pre-computed {type, customShape} entries
+    for(let i=0;i<6;i++)this.nextQueue.push(this._makeNextEntry(this.bag.next()));
+    this.holdPiece=null;this.holdCustomShape=null;this.holdUsed=false;
     this.score=0;this.lines=0;this.level=1;
     this.combo=-1;this.b2b=false;this.b2bCount=0;this.ren=0;
     this.alive=true;this.locking=false;
-    this.lockTimer=null;this.lockDelay=1000;
+    this.lockTimer=null;this.lockDelay=roomSettings.lockDelay||1000;
     this.lastSpin=null;this.lastSpinType=null;
     this.garbageQueue=[];
     this.gravityMs=0;
@@ -354,19 +621,35 @@ class TetrisGame{
     this.spawnPiece();
   }
 
+  // Pre-compute a next queue entry with its customShape
+  _makeNextEntry(type){
+    const baseShape=PIECE_SHAPES[type][0];
+    const mutated=applyMutation(type,baseShape);
+    return {type, customShape: mutated||null};
+  }
+
   spawnPiece(){
-    const type=this.nextQueue.shift();
-    this.nextQueue.push(this.bag.next());
-    this.current={type,rotation:0,x:3,y:0};
+    const entry=this.nextQueue.shift();
+    this.nextQueue.push(this._makeNextEntry(this.bag.next()));
+    const {type, customShape}=entry;
+    this.current={type,rotation:0,x:3,y:0,customShape};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
     if(renderer)renderer._wallBumpActive=false;
     if(!this.isValid(this.current)){this.alive=false;}
   }
 
-  getShape(type,rot){return PIECE_SHAPES[type][((rot%4)+4)%4];}
+  getShape(type,rot,customShape){
+    // If customShape provided, use it (mutation mode — rotation not applied to mutated shapes)
+    if(customShape)return customShape;
+    return PIECE_SHAPES[type][((rot%4)+4)%4];
+  }
+
+  _getShapeForPiece(piece){
+    return this.getShape(piece.type,piece.rotation,piece.customShape||null);
+  }
 
   isValid(piece,dx=0,dy=0){
-    const shape=this.getShape(piece.type,piece.rotation);
+    const shape=this._getShapeForPiece(piece);
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
       const nx=piece.x+c+dx,ny=piece.y+r+dy;
@@ -380,6 +663,26 @@ class TetrisGame{
   rotate(dir){
     const oldRot=this.current.rotation;
     const newRot=((oldRot+(dir>0?1:3))%4+4)%4;
+    // For custom-shaped pieces, rotate the shape matrix itself
+    if(this.current.customShape){
+      const rotated=rotateMatrix(this.current.customShape,dir>0?1:-1);
+      const base={...this.current,rotation:newRot,customShape:rotated};
+      if(this.isValid(base)){
+        this.current=base;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
+        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+        return true;
+      }
+      // Try simple kicks for custom pieces
+      for(const[kx,ky]of [[-1,0],[1,0],[0,-1],[0,1],[-2,0],[2,0]]){
+        const t={...base,x:base.x+kx,y:base.y-ky};
+        if(this.isValid(t)){
+          this.current=t;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
+          if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+          return true;
+        }
+      }
+      return false;
+    }
     const key=`${oldRot}->${newRot}`;
     const kicks=this.current.type==='I'?KICK_I[key]:KICK_JLSTZ[key];
     const base={...this.current,rotation:newRot};
@@ -401,6 +704,7 @@ class TetrisGame{
 
   checkSpin(kx,ky,kicked){
     this.lastSpin=null;this.lastSpinType=null;
+    if(this.current.customShape)return; // skip spin detection for mutated pieces
     const type=this.current.type,x=this.current.x,y=this.current.y,rot=this.current.rotation;
     if(type==='T'){
       const corners=[[0,0],[2,0],[0,2],[2,2]];
@@ -412,7 +716,7 @@ class TetrisGame{
       }
     }
     if(['S','Z','L','J'].includes(type)&&kicked){
-      const shape=this.getShape(type,rot);let bb=false;
+      const shape=this.getShape(type,rot,null);let bb=false;
       outer:for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
         if(!shape[r][c])continue;const ny=y+r+1;
         if(ny>=ROWS+HIDDEN||(ny>=0&&this.board[ny]?.[x+c])){bb=true;break outer;}
@@ -456,7 +760,7 @@ class TetrisGame{
   lockPiece(){
     if(this.locking)return;
     this.locking=true;this.cancelLock();
-    const shape=this.getShape(this.current.type,this.current.rotation);
+    const shape=this._getShapeForPiece(this.current);
     const wasSpin=!!this.lastSpin,spinType=this.lastSpinType;
     this._lockX=this.current.x;this._lockY=this.current.y;this._lockType=this.current.type;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
@@ -486,7 +790,6 @@ class TetrisGame{
     }
 
     if(count>0){
-      // ガベージキャンセル処理 (armed分はここではboardに追加しない — アニメ後に追加)
       const now=performance.now();
       const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
       this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
@@ -512,8 +815,10 @@ class TetrisGame{
 
       this.combo++;this.ren++;
       if(this.ren>1)SFX.ren(this.ren);
-      const isB2B=this.b2b&&(count===4||(isSpin&&!isMini));
-      if(count===4||(isSpin&&!isMini)){if(this.b2b){this.b2bCount++;SFX.b2b();}this.b2b=true;}
+      // 5-line clear (mutation mode): always B2B-eligible, not counted in standard B2B chain
+      const isPenta=count===5;
+      const isB2B=this.b2b&&(count===4||isPenta||(isSpin&&!isMini));
+      if(count===4||isPenta||(isSpin&&!isMini)){if(this.b2b){this.b2bCount++;SFX.b2b();}this.b2b=true;}
       else{this.b2bCount=0;this.b2b=false;}
 
       const pts=this.calcScore(count,isTSpin,isMini,isB2B,this.combo);
@@ -521,6 +826,12 @@ class TetrisGame{
 
       let attack=0;
       if(allClear){attack=10;}
+      else if(isPenta){
+        // 5-line clear = 6 lines attack (mutation bonus)
+        attack=6;
+        if(isB2B)attack+=1;
+        if(this.combo>0)attack+=Math.floor(this.combo/2);
+      }
       else{
         if(isTSpin&&!isMini)attack={1:2,2:4,3:6}[count]||0;
         else if(isMini)attack={1:0,2:1}[count]||0;
@@ -530,7 +841,11 @@ class TetrisGame{
       }
       if(attack>0)socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared});
 
-      if(count===1)SFX.clear1();else if(count===2)SFX.clear2();else if(count===3)SFX.clear3();else SFX.tetris();
+      if(count===1)SFX.clear1();
+      else if(count===2)SFX.clear2();
+      else if(count===3)SFX.clear3();
+      else if(count===5){SFX.tetris();SFX.b2b();} // penta clear special SFX
+      else SFX.tetris();
       if(isSpin&&isTSpin)SFX.tspin();
       if(allClear)SFX.allClear();
 
@@ -628,18 +943,29 @@ class TetrisGame{
     if(this.holdUsed)return;
     this.holdUsed=true;
     const type=this.current.type;
-    if(this.holdPiece){
-      const next=this.holdPiece;this.holdPiece=type;
-      this.current={type:next,rotation:0,x:3,y:0};
+    const customShape=this.current.customShape||null;
+    if(this.holdPiece!==null){
+      const nextType=this.holdPiece;
+      const nextCustomShape=this.holdCustomShape||null;
+      this.holdPiece=type;
+      this.holdCustomShape=customShape;
+      this.current={type:nextType,rotation:0,x:3,y:0,customShape:nextCustomShape};
       this.lastSpin=null;this.lastSpinType=null;this.locking=false;
       if(renderer)renderer._wallBumpActive=false;
-    }else{this.holdPiece=type;this.spawnPiece();}
+    }else{
+      this.holdPiece=type;
+      this.holdCustomShape=customShape;
+      this.spawnPiece();
+    }
     this.cancelLock();SFX.hold();
   }
 
   updateGravity(dt){
     if(!this.alive)return;
-    const msPerDrop=Math.max(50,1000-(this.level-1)*80);
+    const base=roomSettings.gravityBase||1000;
+    const dec=roomSettings.gravityDec||80;
+    const min=roomSettings.gravityMin||50;
+    const msPerDrop=Math.max(min,base-(this.level-1)*dec);
     this.gravityMs+=dt;
     if(this.gravityMs>=msPerDrop){
       this.gravityMs=0;
@@ -868,7 +1194,7 @@ class GameRenderer{
     const g=this.ghostGfx;g.clear();const gs=this.gs;if(!gs.current)return;
     const gy=gs.ghostY();
     if(gy===gs.current.y)return;
-    const shape=gs.getShape(gs.current.type,gs.current.rotation);
+    const shape=gs._getShapeForPiece(gs.current);
     const cellAlpha=0.18;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
@@ -884,13 +1210,12 @@ class GameRenderer{
 
   drawCurrent(){
     const g=this.currentGfx;g.clear();const gs=this.gs;if(!gs.current)return;
-    // ロック進行度: タイマー開始直後=1(白強)→時間経過で0(元色)
     let lockFlash=0;
     if(gs.lockTimer&&gs.lockStartTime!=null){
       const elapsed=performance.now()-gs.lockStartTime;
       lockFlash=Math.max(0,1-(elapsed/gs.lockDelay));
     }
-    const shape=gs.getShape(gs.current.type,gs.current.rotation);
+    const shape=gs._getShapeForPiece(gs.current);
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;const dr=gs.current.y+r-HIDDEN;
       this.drawCell(g,(gs.current.x+c)*CELL,dr*CELL,CELL,gs.current.type,dr<0?0.75:1,lockFlash);
@@ -900,15 +1225,21 @@ class GameRenderer{
   drawNextPieces(){
     const mc=14;
     this.nextGfx.forEach((gfx,i)=>{
-      gfx.clear();const type=this.gs.nextQueue[i];if(!type)return;
-      const shape=PIECE_SHAPES[type][0],a=i===0?1:Math.max(0.3,0.85-i*0.15);
+      gfx.clear();
+      const entry=this.gs.nextQueue[i];if(!entry)return;
+      const type=entry.type||entry; // support old string format
+      const customShape=entry.customShape||null;
+      const shape=customShape||PIECE_SHAPES[type][0];
+      const a=i===0?1:Math.max(0.3,0.85-i*0.15);
       for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++)if(shape[r][c])this.drawCell(gfx,c*mc,r*mc,mc,type,a);
     });
   }
 
   drawHold(){
-    const g=this.holdGfx;g.clear();const type=this.gs.holdPiece;if(!type)return;
-    const mc=14,shape=PIECE_SHAPES[type][0],a=this.gs.holdUsed?0.3:1;
+    const g=this.holdGfx;g.clear();
+    const type=this.gs.holdPiece;if(!type)return;
+    const customShape=this.gs.holdCustomShape||null;
+    const mc=14,shape=customShape||PIECE_SHAPES[type][0],a=this.gs.holdUsed?0.3:1;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++)if(shape[r][c])this.drawCell(g,c*mc,r*mc,mc,type,a);
   }
 
@@ -946,8 +1277,12 @@ class GameRenderer{
     if(d.nextPieces&&d.nextGfx){
       const mc=8;
       d.nextGfx.forEach((ng,i)=>{
-        ng.clear();const type=d.nextPieces[i];if(!type)return;
-        const shape=PIECE_SHAPES[type][0],a=i===0?0.9:0.5;
+        ng.clear();
+        const entry=d.nextPieces[i];if(!entry)return;
+        const type=entry.type||entry;
+        const customShape=entry.customShape||null;
+        const shape=customShape||PIECE_SHAPES[type][0];
+        const a=i===0?0.9:0.5;
         for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++)if(shape[r][c])this.drawCell(ng,c*mc,r*mc,mc,type,a);
       });
     }
@@ -1557,7 +1892,193 @@ function sendChat(){
 socket.on('chat_message',addChatMessage);
 function esc(t){return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
-// ---- Settings UI ----
+// ---- Mobile Controls ----
+
+function toggleMobileControls() {
+  mobileControlsEnabled = !mobileControlsEnabled;
+  const btn = document.getElementById('mobile-toggle-btn');
+  if (mobileControlsEnabled) {
+    btn.innerHTML = '📱 MOBILE<br>ON';
+    btn.classList.add('on');
+    setupMobileControls();
+  } else {
+    btn.innerHTML = '📱 MOBILE<br>OFF';
+    btn.classList.remove('on');
+    removeMobileControls();
+  }
+  // Save preference
+  document.cookie='tetrix_mobile='+(mobileControlsEnabled?'1':'0')+'; max-age=31536000; path=/';
+  const sdBtn = document.getElementById('mobile-softdrop-btn');
+  const inGame = document.getElementById('game').classList.contains('active');
+  if(sdBtn) sdBtn.style.display=(mobileControlsEnabled&&inGame)?'flex':'none';
+}
+
+// ---- Mobile touch state ----
+let _mobileTouchData = {};
+
+// Thresholds
+const M_SWIPE_X    = 30;  // px to register horizontal swipe (move)
+const M_SWIPE_DOWN = 55;  // px to register hard drop
+const M_SWIPE_UP   = 40;  // px to register hold
+const M_TAP_MS     = 280; // max ms for a tap (rotation)
+const M_DAS_MS     = 150; // long-hold before continuous move starts
+const M_ARR_MS     = 40;  // ms between repeated moves during DAS
+
+function setupMobileControls() {
+  const gameEl = document.getElementById('game');
+  gameEl.addEventListener('touchstart',  onMobileTouchStart,  { passive: false });
+  gameEl.addEventListener('touchmove',   onMobileTouchMove,   { passive: false });
+  gameEl.addEventListener('touchend',    onMobileTouchEnd,    { passive: false });
+  gameEl.addEventListener('touchcancel', onMobileTouchCancel, { passive: false });
+  // Soft drop button
+  const sdBtn = document.getElementById('mobile-softdrop-btn');
+  sdBtn.addEventListener('touchstart', onSoftDropStart, { passive: false });
+  sdBtn.addEventListener('touchend',   onSoftDropEnd,   { passive: false });
+  sdBtn.addEventListener('touchcancel',onSoftDropEnd,   { passive: false });
+}
+
+function removeMobileControls() {
+  const gameEl = document.getElementById('game');
+  gameEl.removeEventListener('touchstart',  onMobileTouchStart);
+  gameEl.removeEventListener('touchmove',   onMobileTouchMove);
+  gameEl.removeEventListener('touchend',    onMobileTouchEnd);
+  gameEl.removeEventListener('touchcancel', onMobileTouchCancel);
+  Object.values(_mobileTouchData).forEach(d => _mobileClean(d));
+  _mobileTouchData = {};
+}
+
+function _mobileClean(d) {
+  if (!d) return;
+  if (d.dasTimer)  { clearTimeout(d.dasTimer);  d.dasTimer = null; }
+  if (d.dasArr)    { clearInterval(d.dasArr);   d.dasArr   = null; }
+}
+
+// ---- Soft Drop Button ----
+let _sdBtnTimer = null;
+function onSoftDropStart(e) {
+  e.preventDefault(); e.stopPropagation();
+  if (!gameState || !gameState.alive) return;
+  document.getElementById('mobile-softdrop-btn').classList.add('active-press');
+  gameState.softDrop();
+  _sdBtnTimer = setInterval(() => {
+    if (!gameState || !gameState.alive) { clearInterval(_sdBtnTimer); _sdBtnTimer = null; return; }
+    gameState.softDrop();
+  }, 80);
+}
+function onSoftDropEnd(e) {
+  e.preventDefault();
+  document.getElementById('mobile-softdrop-btn').classList.remove('active-press');
+  if (_sdBtnTimer) { clearInterval(_sdBtnTimer); _sdBtnTimer = null; }
+}
+
+// ---- Touch side ----
+function _side(x) { return x < window.innerWidth / 2 ? 'left' : 'right'; }
+
+function onMobileTouchStart(e) {
+  e.preventDefault();
+  if (!mobileControlsEnabled) return;
+  for (const t of e.changedTouches) {
+    _mobileTouchData[t.identifier] = {
+      id: t.identifier,
+      side: _side(t.clientX),
+      startX: t.clientX,
+      startY: t.clientY,
+      startTime: performance.now(),
+      lastX: t.clientX,   // for incremental horizontal swipe tracking
+      swipeHandled: false,
+      dasTimer: null,
+      dasArr: null,
+      dasDir: 0,
+      // track accumulated horizontal distance for step-based moves
+      swipeAccX: 0,
+    };
+  }
+}
+
+function onMobileTouchMove(e) {
+  e.preventDefault();
+  if (!mobileControlsEnabled) return;
+  for (const t of e.changedTouches) {
+    const d = _mobileTouchData[t.identifier];
+    if (!d || d.swipeHandled) continue;
+
+    const totalDX = t.clientX - d.startX;
+    const totalDY = t.clientY - d.startY;
+    const absDX = Math.abs(totalDX), absDY = Math.abs(totalDY);
+
+    // ---- DOWN swipe → hard drop ----
+    if (totalDY > M_SWIPE_DOWN && absDY > absDX * 1.2) {
+      d.swipeHandled = true;
+      _mobileClean(d);
+      if (gameState && gameState.alive) gameState.hardDrop();
+      continue;
+    }
+
+    // ---- UP swipe → hold ----
+    if (totalDY < -M_SWIPE_UP && absDY > absDX * 1.2) {
+      d.swipeHandled = true;
+      _mobileClean(d);
+      if (gameState && gameState.alive) gameState.hold();
+      continue;
+    }
+
+    // ---- Horizontal swipe → move (step per M_SWIPE_X px) ----
+    if (absDX > 10 && absDX > absDY * 1.0) {
+      const incX = t.clientX - d.lastX;
+      d.swipeAccX += incX;
+      const steps = Math.trunc(d.swipeAccX / M_SWIPE_X);
+      if (steps !== 0) {
+        d.swipeAccX -= steps * M_SWIPE_X;
+        const dir = steps > 0 ? 1 : -1;
+        for (let i = 0; i < Math.abs(steps); i++) {
+          if (gameState && gameState.alive) gameState.move(dir);
+        }
+        // Start DAS if holding in one direction
+        if (!d.dasDir || d.dasDir !== dir) {
+          _mobileClean(d);
+          d.dasDir = dir;
+          d.dasTimer = setTimeout(() => {
+            d.dasArr = setInterval(() => {
+              if (!gameState || !gameState.alive) { _mobileClean(d); return; }
+              gameState.move(dir);
+            }, M_ARR_MS);
+          }, M_DAS_MS);
+        }
+      }
+      d.lastX = t.clientX;
+    }
+  }
+}
+
+function onMobileTouchEnd(e) {
+  e.preventDefault();
+  if (!mobileControlsEnabled) return;
+  for (const t of e.changedTouches) {
+    const d = _mobileTouchData[t.identifier];
+    if (!d) continue;
+    _mobileClean(d);
+
+    const elapsed = performance.now() - d.startTime;
+    const totalDX = Math.abs(t.clientX - d.startX);
+    const totalDY = Math.abs(t.clientY - d.startY);
+    const isQuickTap = elapsed < M_TAP_MS && totalDX < 18 && totalDY < 18 && !d.swipeHandled;
+
+    if (isQuickTap && gameState && gameState.alive) {
+      // Left side tap → rotate left (-1), right side tap → rotate right (+1)
+      gameState.rotate(d.side === 'right' ? 1 : -1);
+    }
+
+    delete _mobileTouchData[t.identifier];
+  }
+}
+
+function onMobileTouchCancel(e) {
+  for (const t of e.changedTouches) {
+    const d = _mobileTouchData[t.identifier];
+    if (d) { _mobileClean(d); delete _mobileTouchData[t.identifier]; }
+  }
+}
+
 document.addEventListener('DOMContentLoaded',()=>{
   loadSettings();
   document.getElementById('ghost-opacity').value=settings.ghostOpacity;
@@ -1573,5 +2094,22 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.getElementById('chat-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendChat();});
   document.getElementById('gl-join-id-input').addEventListener('keydown',e=>{if(e.key==='Enter')glJoinRoom();});
   document.getElementById('gl-room-id-input').addEventListener('keydown',e=>{if(e.key==='Enter')glCreateRoom();});
-  document.getElementById('player-name').addEventListener('keydown',e=>{if(e.key==='Enter')createRoom();});
+
+  // Name modal: pre-fill with saved name, focus input
+  const saved=getSavedName();
+  const inp=document.getElementById('name-modal-input');
+  if(saved)inp.value=saved;
+  inp.focus();
+  inp.addEventListener('keydown',e=>{if(e.key==='Enter')submitNameModal();});
+
+  // Restore mobile controls preference
+  try{
+    const mc=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_mobile='));
+    if(mc&&mc.split('=')[1].trim()==='1'){
+      mobileControlsEnabled=true;
+      const btn=document.getElementById('mobile-toggle-btn');
+      btn.innerHTML='📱 MOBILE<br>ON';btn.classList.add('on');
+      setupMobileControls();
+    }
+  }catch(e){}
 });
