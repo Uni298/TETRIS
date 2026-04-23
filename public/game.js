@@ -1,15 +1,42 @@
 // ===== TETRIX ONLINE =====
 
+// ---- Socket ----
+const socket=io();
+let myId=null,roomId=null,myName='',isHost=false,roomPlayers=[];
+let shogiMode=false;
+let isSoloGame=false;
+let isSpectator=false; // 観戦モードフラグ
+socket.on('connect',()=>{myId=socket.id;});
+
+// ---- Name Modal (initial screen) ----
+function getSavedName(){
+  try{const m=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_name='));return m?decodeURIComponent(m.split('=')[1].trim()):''}catch(e){return '';}
+}
+function saveName(name){
+  document.cookie='tetrix_name='+encodeURIComponent(name)+'; max-age=31536000; path=/';
+}
+function submitNameModal(){
+  const inp=document.getElementById('name-modal-input');
+  const name=inp.value.trim();
+  if(!name){document.getElementById('name-modal-error').textContent='Please enter a name';return;}
+  myName=name;
+  saveName(name);
+  document.getElementById('name-modal').classList.add('hidden');
+  showGameLobby(null);
+}
+
 // ---- Settings ----
 let mobileControlsEnabled = false; // Mobile controls toggle
-let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dpad:{cross:{x:2,y:55,size:160,opacity:80},shift:{x:68,y:80,size:80,opacity:80},harddrop:{x:79,y:68,size:80,opacity:80},z:{x:90,y:80,size:80,opacity:80},swapCenterDown:false}};
+let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,
+  uiLayout:{boardOffsetY:0,boardScale:100,sideUiOffsetY:0,sideUiFontScale:100},
+  dpad:{cross:{x:2,y:55,size:160,opacity:80},shift:{x:68,y:80,size:80,opacity:80},harddrop:{x:79,y:68,size:80,opacity:80},z:{x:90,y:80,size:80,opacity:80},swapCenterDown:false}};
 function loadSettings(){
   try{
     const s=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_settings='));
     if(s){
       const saved=JSON.parse(decodeURIComponent(s.split('=')[1]));
-      // dpadはネスト構造なので深くマージ（古いフラット形式を無視）
       const savedDpad=saved.dpad;
+      const savedUiLayout=saved.uiLayout;
       settings={...settings,...saved};
       if(savedDpad&&savedDpad.cross&&savedDpad.shift&&savedDpad.z){
         settings.dpad={
@@ -23,6 +50,7 @@ function loadSettings(){
         // 古い形式または不正 → デフォルトを維持
         settings.dpad={cross:{x:2,y:55,size:160,opacity:80},shift:{x:2,y:80,size:80,opacity:80},harddrop:{x:20,y:80,size:80,opacity:80},z:{x:38,y:80,size:80,opacity:80},swapCenterDown:false};
       }
+      if(savedUiLayout){settings.uiLayout={...settings.uiLayout,...savedUiLayout};}
     }
   }catch(e){}
 }
@@ -37,7 +65,9 @@ function updateSetting(key,val){
   else if(key==='softDropInterval'){settings.softDropInterval=parseInt(val);document.getElementById('soft-drop-val').textContent=val+'ms';}
   else if(key==='dasDelay'){settings.dasDelay=parseInt(val);document.getElementById('das-delay-val').textContent=val+'ms';}
   else if(key==='arrInterval'){settings.arrInterval=parseInt(val);document.getElementById('arr-interval-val').textContent=val+'ms';}
+  else if(key==='dcdDelay'){settings.dcdDelay=parseInt(val);document.getElementById('dcd-delay-val').textContent=val+'ms';}
   else if(key==='dpad'){if(val.part){settings.dpad[val.part]={...settings.dpad[val.part],...val.data};}else{settings.dpad={...settings.dpad,...val};}applyDpadLayout();}
+  else if(key==='uiLayout'){settings.uiLayout={...settings.uiLayout,...val};applyUiLayout();}
   saveSettings();
 }
 function toggleSettings(){document.getElementById('settings-modal').classList.toggle('open');}
@@ -68,20 +98,24 @@ if (settings.dpad.harddrop.y === 80 && settings.dpad.harddrop.x >= 75 && setting
   saveSettings();
 }
 
-// ---- Socket ----
-const socket=io();
-let myId=null,roomId=null,myName='',isHost=false,roomPlayers=[];
-let shogiMode=false;
-let isSoloGame=false;
-let isSpectator=false; // 観戦モードフラグ
-socket.on('connect',()=>{myId=socket.id;});
-
 // ---- Screen ----
+function applyUiLayout(){
+  // ゲーム中なら boardWrap のY座標だけリアルタイム更新（スケール・その他は次ゲームで反映）
+  if(typeof renderer!=='undefined'&&renderer&&renderer.boardWrap&&typeof renderer.mainBY==='number'){
+    const ui=settings.uiLayout||{};
+    const sc=renderer._uiScale||1;
+    // BOARD_H=560, BOARD_W=280 (定数はグローバルスコープにある)
+    const bh=(typeof BOARD_H!=='undefined'?BOARD_H:560)*sc;
+    renderer.boardWrap.y=renderer.mainBY+bh/2+(renderer.boardOffsetY||0);
+  }
+}
 function showScreen(id){
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById(id).classList.add('active');
-  document.getElementById('settings-btn').style.display=id==='game'?'block':'none';
+  // 設定ボタンはゲーム画面・ロビー・待機室でも表示
   const inGame=(id==='game');
+  const showSettingsBtn=(id==='game'||id==='game-lobby'||id==='waiting');
+  document.getElementById('settings-btn').style.display=showSettingsBtn?'block':'none';
   const sdBtn=document.getElementById('mobile-softdrop-btn');
   const lBtns=document.getElementById('mobile-left-btns');
   if(sdBtn)sdBtn.style.display='none';
@@ -89,23 +123,6 @@ function showScreen(id){
   showDpad(inGame);
   const dpadBtnWrap=document.getElementById('dpad-layout-btn-wrap');
   if(dpadBtnWrap)dpadBtnWrap.style.display=(mobileControlsEnabled&&id==='game-lobby')?'block':'none';
-}
-
-// ---- Name Modal (initial screen) ----
-function getSavedName(){
-  try{const m=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_name='));return m?decodeURIComponent(m.split('=')[1].trim()):''}catch(e){return '';}
-}
-function saveName(name){
-  document.cookie='tetrix_name='+encodeURIComponent(name)+'; max-age=31536000; path=/';
-}
-function submitNameModal(){
-  const inp=document.getElementById('name-modal-input');
-  const name=inp.value.trim();
-  if(!name){document.getElementById('name-modal-error').textContent='Please enter a name';return;}
-  myName=name;
-  saveName(name);
-  document.getElementById('name-modal').classList.add('hidden');
-  showGameLobby(null);
 }
 
 // ---- Mutation Mode ----
@@ -814,9 +831,15 @@ class TetrisGame{
   }
 
   spawnPiece(){
-    const entry=this.nextQueue.shift();
+    this._dcdActive=true;
+    if(settings.dcdDelay>0){
+      setTimeout(()=>{this._dcdActive=false;},settings.dcdDelay);
+    }else{
+      this._dcdActive=false;
+    }
+    const nextEntry=this.nextQueue.shift();
     this.nextQueue.push(this._makeNextEntry(this.bag.next()));
-    const {type, customShape}=entry;
+    const {type, customShape}=nextEntry;
     this.current={type,rotation:0,x:3,y:SPAWN_Y,customShape};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
     if(renderer)renderer._wallBumpActive=false;
@@ -920,6 +943,7 @@ class TetrisGame{
   }
 
   move(dx){
+    if(this._dcdActive) return false;
     if(this.isValid(this.current,dx,0)){
       this.current.x+=dx;this.lastSpin=null;this.tryResetLock();SFX.move();
       return true;
@@ -1326,8 +1350,13 @@ class GameRenderer{
   }
 
   buildLayout(){
-    this.mainBX=this.W/2-BOARD_W/2-30;
-    this.mainBY=(this.H-(BOARD_H+ABOVE_BOARD))/2+ABOVE_BOARD;
+    const ui=settings.uiLayout||{};
+    const offY=ui.boardOffsetY||0;
+    const sc=(ui.boardScale||100)/100;
+    // スケールはボードの中心を保ちながらオフセット計算に反映
+    this._uiScale=sc;
+    this.mainBX=this.W/2-BOARD_W*sc/2-30;
+    this.mainBY=(this.H-(BOARD_H*sc+ABOVE_BOARD*sc))/2+ABOVE_BOARD*sc+offY;
   }
 
   createBg(){
@@ -1356,8 +1385,9 @@ class GameRenderer{
   buildOpponentBoards(){
     const oCell=12,oBW=COLS*oCell;
     const showAbove=2,oBH=(ROWS+showAbove)*oCell;
+    const sc=this._uiScale||1;
     // 全対戦相手のボードを作成（表示/非表示はupdateVisibleOpponentsで制御）
-    const RX=this.mainBX+BOARD_W+90; // 右スロット x
+    const RX=this.mainBX+BOARD_W*sc+90; // 右スロット x
     const LX=this.mainBX-oBW-90;    // 左スロット x
     const by=this.H/2-oBH/2;
     this.opponentPlayers.forEach((p)=>{
@@ -1366,7 +1396,8 @@ class GameRenderer{
       const borderCol=isBot?0xffbe0b:0x00f5ff;
       const bg=new PIXI.Graphics();
       bg.beginFill(0x000010,0.9);bg.drawRect(0,0,oBW,oBH);bg.endFill();
-      bg.lineStyle(1,borderCol,isBot?0.45:0.2);bg.drawRect(0,0,oBW,oBH);
+      bg.lineStyle(1,0xffffff,isBot?0.45:0.2);bg.drawRect(0,0,oBW,oBH);
+      bg.tint=borderCol;
       // Grid lines for HIGH/ULTRA
       if(settings.quality==='high'||settings.quality==='ultra'){
         bg.lineStyle(0.3,0x001833,0.4);
@@ -1390,8 +1421,10 @@ class GameRenderer{
       const renGfx=new PIXI.Graphics();renGfx.alpha=0;cont.addChild(renGfx);
       // Lightning effect layer for opponent B2B
       const lightGfx=new PIXI.Graphics();lightGfx.alpha=0;cont.addChild(lightGfx);
+      // 煙レイヤー（cont の外に出るため root に追加）
+      const opSmokeLayer=new PIXI.Container();this.root.addChild(opSmokeLayer);
       this.opBoardData[p.id]={
-        cont,boardGfx,scoreTxt:stxt,nextGfx,holdGfx,cell:oCell,origX:RX,origY:by,
+        id:p.id,name:p.name,cont,bg,boardGfx,scoreTxt:stxt,nextGfx,holdGfx,cell:oCell,origX:RX,origY:by,
         board:null,currentPiece:null,nextPieces:null,holdPiece:null,
         shakeX:0,shakeY:0,tilt:0,tiltTarget:0,dead:false,
         boardW:oBW,boardH:oBH,showAbove,isBot,
@@ -1399,7 +1432,8 @@ class GameRenderer{
         score:0,
         flashGfx,flashAlpha:0,
         renGfx,lightGfx,b2bCount:0,lightTimer:0,
-        ren:0,renColor:0x00f5ff
+        ren:0,renColor:0x00f5ff,
+        smokeLayer:opSmokeLayer,smokeParticles:[],smokeTick:0,
       };
     });
     // スロット位置を保存
@@ -1436,9 +1470,11 @@ class GameRenderer{
   }
 
   buildMainBoard(){
+    const sc=this._uiScale||1;
     this.boardWrap=new PIXI.Container();
-    this.boardWrap.x=this.mainBX+BOARD_W/2;
-    this.boardWrap.y=this.mainBY+BOARD_H/2;
+    this.boardWrap.x=this.mainBX+BOARD_W*sc/2;
+    this.boardWrap.y=this.mainBY+BOARD_H*sc/2;
+    this.boardWrap.scale.set(sc);
     this.root.addChild(this.boardWrap);
     this.boardCont=new PIXI.Container();
     this.boardCont.pivot.set(BOARD_W/2,BOARD_H/2);
@@ -1456,8 +1492,9 @@ class GameRenderer{
     for(let r=0;r<=ROWS;r++){bg.moveTo(0,r*CELL);bg.lineTo(BOARD_W,r*CELL);}
     this.boardCont.addChild(bg);
     this.boardBorder=new PIXI.Graphics();
-    this.boardBorder.lineStyle(2,0x00f5ff,0.8);
+    this.boardBorder.lineStyle(2,0xffffff,0.8);
     this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+    this.boardBorder.tint=0x00f5ff;
     this.boardCont.addChild(this.boardBorder);
     this.boardGfx=new PIXI.Graphics();this.boardCont.addChild(this.boardGfx);
     this.ghostGfx=new PIXI.Graphics();this.boardCont.addChild(this.ghostGfx);
@@ -1478,26 +1515,29 @@ class GameRenderer{
   }
 
   buildSideUI(){
-    const px=this.mainBX+BOARD_W+12,py=this.mainBY;
+    const sc=this._uiScale||1;
+    const ui=settings.uiLayout||{};
+    const sOffY=ui.sideUiOffsetY||0;
+    const fsc=(ui.sideUiFontScale||100)/100;
+    const px=this.mainBX+BOARD_W*sc+12,py=this.mainBY+sOffY;
     this.uiCont=new PIXI.Container();this.uiCont.x=px;this.uiCont.y=py;this.root.addChild(this.uiCont);
-    const lbl=(t,x,y,col=0x888888)=>Object.assign(new PIXI.Text(t,new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:11,fill:col,letterSpacing:3})),{x,y});
+    const lbl=(t,x,y,col=0x888888)=>Object.assign(new PIXI.Text(t,new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(11*fsc),fill:col,letterSpacing:3})),{x,y});
     this.uiCont.addChild(lbl('SCORE',0,0));
     // スコア文字色: 白
-    this.scoreTxt=Object.assign(new PIXI.Text('0000000',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:19,fill:0xffffff,fontWeight:'700'})),{x:0,y:14});
+    this.scoreTxt=Object.assign(new PIXI.Text('0000000',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(19*fsc),fill:0xffffff,fontWeight:'700'})),{x:0,y:14*fsc});
     this.uiCont.addChild(this.scoreTxt);
-    this.uiCont.addChild(lbl('LINES',0,48));
-    this.linesTxt=Object.assign(new PIXI.Text('0',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:14,fill:0xffbe0b})),{x:0,y:62});this.uiCont.addChild(this.linesTxt);
-    this.uiCont.addChild(lbl('LEVEL',0,90));
-    this.levelTxt=Object.assign(new PIXI.Text('1',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:14,fill:0xffbe0b})),{x:0,y:104});this.uiCont.addChild(this.levelTxt);
+    this.uiCont.addChild(lbl('LINES',0,48*fsc));
+    this.linesTxt=Object.assign(new PIXI.Text('0',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(14*fsc),fill:0xffbe0b})),{x:0,y:62*fsc});this.uiCont.addChild(this.linesTxt);
+    this.uiCont.addChild(lbl('LEVEL',0,90*fsc));
+    this.levelTxt=Object.assign(new PIXI.Text('1',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(14*fsc),fill:0xffbe0b})),{x:0,y:104*fsc});this.uiCont.addChild(this.levelTxt);
     // NEXT
-    this.nextCont=new PIXI.Container();this.nextCont.x=px;this.nextCont.y=py+145;this.root.addChild(this.nextCont);
+    this.nextCont=new PIXI.Container();this.nextCont.x=px;this.nextCont.y=py+145*fsc;this.root.addChild(this.nextCont);
     this.nextCont.addChild(lbl('NEXT',0,0));
     this.nextGfx=[];for(let i=0;i<5;i++){const g=new PIXI.Graphics();g.y=18+i*50;this.nextCont.addChild(g);this.nextGfx.push(g);}
     // HOLD
-    this.holdCont=new PIXI.Container();this.holdCont.x=this.mainBX-90;this.holdCont.y=this.mainBY;this.root.addChild(this.holdCont);
-    this.holdCont.addChild(lbl('HOLD',0,0));
+    this.holdCont=new PIXI.Container();this.holdCont.x=this.mainBX-90;this.holdCont.y=this.mainBY+sOffY;this.root.addChild(this.holdCont);    this.holdCont.addChild(lbl('HOLD',0,0));
     this.holdGfx=new PIXI.Graphics();this.holdGfx.y=18;this.holdCont.addChild(this.holdGfx);
-    const n=Object.assign(new PIXI.Text((this.myPlayer?this.myPlayer.name:'').toUpperCase(),new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:12,fill:0x00f5ff,letterSpacing:3})),{x:this.mainBX,y:this.mainBY-22});
+    const n=Object.assign(new PIXI.Text((this.myPlayer?this.myPlayer.name:'').toUpperCase(),new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12*fsc),fill:0x00f5ff,letterSpacing:3})),{x:this.mainBX,y:this.mainBY-22});
     this.root.addChild(n);
   }
 
@@ -1729,7 +1769,8 @@ class GameRenderer{
   // スピン確定時のみ傾く
   onSpinTilt(dir){
     if(settings.tilt!=='on')return;
-    this.tiltTarget=dir>0?0.065:-0.065;
+    // 75% intensity: 0.065 * 0.75 = 0.04875
+    this.tiltTarget=dir>0?0.048: -0.048;
     setTimeout(()=>{this.tiltTarget=0;},292); // T-spin tilt 1.2倍速
   }
 
@@ -1911,7 +1952,8 @@ class GameRenderer{
     if(count>=4||allClear)this.boardOffsetY=Math.max(this.boardOffsetY,24);
     else if(count>=2)this.boardOffsetY=Math.max(this.boardOffsetY,10);
     if(settings.tilt==='on'&&spinType&&spinType!=='MINI_TSPIN'){
-      this.tiltTarget=spinType.startsWith('T')?0.07:-0.07;
+      // 75% intensity: 0.07 * 0.75 = 0.0525
+      this.tiltTarget=spinType.startsWith('T')?0.052:-0.052;
       setTimeout(()=>{this.tiltTarget=0;},292);
     }
     if(settings.particles!=='off'&&settings.quality!=='minimum'){
@@ -2420,6 +2462,9 @@ class GameRenderer{
   opponentGameOver(pid){
     const d=this.opBoardData[pid];if(!d||d.dead)return;
     d.dead=true;
+    // 煙をクリーンアップ
+    if(d.smokeParticles){d.smokeParticles.forEach(p=>{try{p.gfx.destroy();}catch(e){}});d.smokeParticles=[];}
+    if(d.smokeLayer){try{d.smokeLayer.destroy({children:true});}catch(e){}d.smokeLayer=null;}
     this.updateVisibleOpponents();
     const {oBW:bw,oBH:bh}=d;
     const oBW=d.boardW,oBH=d.boardH;
@@ -2454,7 +2499,8 @@ class GameRenderer{
     const d=this.opBoardData[pid];if(!d||d.dead)return;
     const isTSpin=spinType&&spinType.startsWith('T');
     if(!isTSpin&&!spinType)return;
-    d.tiltTarget=isTSpin?0.08:-0.06;
+    // 75% intensity: 0.08*0.75=0.06, 0.06*0.75=0.045
+    d.tiltTarget=isTSpin?0.06:-0.045;
     d.shakeX=(Math.random()-0.5)*10;d.shakeY=(Math.random()-0.5)*5;
     setTimeout(()=>{if(d)d.tiltTarget=0;},400);
   }
@@ -2493,7 +2539,8 @@ class GameRenderer{
 
     // テトリス/スピン: 傾き
     if(count>=4||allClear||(spinType&&spinType!=='MINI_TSPIN')){
-      d.tiltTarget=(spinType&&spinType.startsWith('T'))?0.06:-0.06;
+      // 75% intensity: 0.06 * 0.75 = 0.045
+      d.tiltTarget=(spinType&&spinType.startsWith('T'))?0.045:-0.045;
       setTimeout(()=>{if(d)d.tiltTarget=0;},350);
     }
 
@@ -2557,8 +2604,9 @@ class GameRenderer{
     if(this._gameOverTick){
       this._gameOverTick(dt);
     } else {
-      this.boardWrap.x=this.mainBX+BOARD_W/2+this.boardOffsetX+this.wallBumpX;
-      this.boardWrap.y=this.mainBY+BOARD_H/2+this.boardOffsetY;
+      const sc=this._uiScale||1;
+      this.boardWrap.x=this.mainBX+BOARD_W*sc/2+this.boardOffsetX+this.wallBumpX;
+      this.boardWrap.y=this.mainBY+BOARD_H*sc/2+this.boardOffsetY;
     }
     for(const pid of Object.keys(this.opBoardData)){
       const d=this.opBoardData[pid];
@@ -2582,7 +2630,7 @@ class GameRenderer{
     this._updateSmoke(dt);
   }
 
-  // 危機状態の煙エフェクト
+  // 危機状態の煙エフェクト（リアル煙）
   _updateSmoke(dt){
     if(!this.gs||settings.particles==='off'||settings.quality==='minimum')return;
 
@@ -2596,23 +2644,20 @@ class GameRenderer{
     }
 
     // 上から4行目（visible top = HIDDEN行目）まで積まれたら危機
-    // topRow <= HIDDEN+3 (上から可視4行以内) で danger開始
-    const dangerStart=HIDDEN+4; // 上から4行目 = board index HIDDEN+3
+    const dangerStart=HIDDEN+4;
     const danger=Math.max(0,Math.min(1,(dangerStart-topRow)/4)); // 0~1
 
-    // 枠の色を danger に応じてシアン→赤に変化
+    // 枠の色を 赤 に固定 (danger > 0 のとき)
     if(this.boardBorder&&!this._garbageFlashing){
       if(danger>0){
-        // 赤みがかったパルス
         const pulse=0.6+0.4*Math.abs(Math.sin(performance.now()*0.004));
-        const r2=Math.floor(0x00+0xff*danger);
-        const g2=Math.floor(0xf5*(1-danger));
-        const b2=Math.floor(0xff*(1-danger));
-        const borderCol=(r2<<16)|(g2<<8)|b2;
+        // 常に赤色に
+        const borderCol=0xff0000;
         this.boardBorder.tint=borderCol;
         this.boardBorder.alpha=0.7+0.3*pulse;
       } else {
-        this.boardBorder.tint=0xffffff;
+        // 煙が出ていない時は元のシアンに戻す
+        this.boardBorder.tint=0x00f5ff;
         this.boardBorder.alpha=1;
       }
     }
@@ -2620,51 +2665,116 @@ class GameRenderer{
     if(danger<=0){
       // 煙パーティクルをフェードアウト
       this._smokeParticles=this._smokeParticles.filter(p=>{
-        p.life-=0.03;p.gfx.alpha=p.life*0.7;p.gfx.x+=p.vx;p.gfx.y+=p.vy;p.gfx.scale.x*=1.02;p.gfx.scale.y*=1.02;
+        p.life-=0.025;
+        p.gfx.alpha=Math.max(0,p.life*p.maxAlpha);
+        p.gfx.x+=p.vx;p.gfx.y+=p.vy;
+        p.vx+=(Math.random()-0.5)*0.04; // 乱流
+        p.gfx.scale.x*=p.expandX;p.gfx.scale.y*=p.expandY;
+        p.gfx.rotation+=p.rot;
         if(p.life<=0){try{p.gfx.destroy();}catch(e){}return false;}return true;
       });
       return;
     }
 
-    // 煙の生成レート: 危機度に応じて増加
+    // 煙の生成レート: 危機度に応じて増加（以前より控えめに調整）
     this._smokeTick=(this._smokeTick||0)+dt;
-    const rate=Math.max(20,100-danger*85); // ms per smoke puff (faster as danger rises)
+    const rate=Math.max(30,120-danger*85);
     if(this._smokeTick>=rate){
       this._smokeTick=0;
-      const n=settings.particles==='high'?Math.ceil(2+danger*3):1;
+      // 量を調整（以前の2倍）
+      const n=settings.particles==='high'?Math.ceil(2+danger*4):Math.ceil(1+danger*2);
+      const sc=this._uiScale||1;
+      const bw=BOARD_W*sc;
+      const bh=BOARD_H*sc;
+
       for(let i=0;i<n;i++){
-        // 枠の上辺・左右上部から煙を出す
-        const side=Math.floor(Math.random()*3);
-        let sx,sy;
-        if(side===0){sx=this.mainBX+Math.random()*BOARD_W;sy=this.mainBY-Math.random()*8;}
-        else if(side===1){sx=this.mainBX-Math.random()*6;sy=this.mainBY+Math.random()*BOARD_H*0.3;}
-        else{sx=this.mainBX+BOARD_W+Math.random()*6;sy=this.mainBY+Math.random()*BOARD_H*0.3;}
-        const g=new PIXI.Graphics();
-        const sz=(6+Math.random()*14)*Math.max(0.4,danger);
-        // 危機度: 薄灰→オレンジ→赤
-        const col=danger>0.75?0xff2200:danger>0.4?0xff6600:0x886644;
-        g.beginFill(col,0.35+danger*0.3);
-        g.drawEllipse(0,0,sz,sz*0.65);
-        g.endFill();
-        g.x=sx;g.y=sy;
-        g.alpha=0.25+danger*0.45;
-        this.smokeLayer.addChild(g);
-        this._smokeParticles.push({
-          gfx:g,
-          vx:(Math.random()-0.5)*0.7,
-          vy:-(0.6+Math.random()*1.4*danger),
-          life:0.6+Math.random()*0.4,
-          decay:0.007+Math.random()*0.009
-        });
+        // 四隅からランダムに選択
+        const corner=Math.floor(Math.random()*4);
+        let sx,sy,svx,svy;
+        // スピードを1.3倍
+        const speed=(0.6+danger*1.2)*1.3;
+        
+        if(corner===0){ // Top-Left
+          sx=this.mainBX; sy=this.mainBY; svx=-speed; svy=-speed;
+        } else if(corner===1){ // Top-Right
+          sx=this.mainBX+bw; sy=this.mainBY; svx=speed; svy=-speed;
+        } else if(corner===2){ // Bottom-Left
+          sx=this.mainBX; sy=this.mainBY+bh; svx=-speed; svy=speed;
+        } else { // Bottom-Right
+          sx=this.mainBX+bw; sy=this.mainBY+bh; svx=speed; svy=speed;
+        }
+
+        this._spawnRealisticSmokePuff(sx, sy, danger, this.smokeLayer, this._smokeParticles, svx, svy);
       }
     }
     // 既存煙を更新
     this._smokeParticles=this._smokeParticles.filter(p=>{
-      p.life-=p.decay;p.gfx.alpha=p.life*(0.35+danger*0.35);
+      p.life-=p.decay;
+      // フェーズ別アルファ: 立ち上がり→最大→フェードアウト
+      const lifeRatio=p.life/p.maxLife;
+      let alpha;
+      if(lifeRatio>0.8){alpha=p.maxAlpha*(1-lifeRatio)*5;}
+      else if(lifeRatio>0.3){alpha=p.maxAlpha;}
+      else{alpha=p.maxAlpha*(lifeRatio/0.3);}
+      p.gfx.alpha=Math.max(0,alpha);
       p.gfx.x+=p.vx;p.gfx.y+=p.vy;
-      p.gfx.scale.x*=1.018;p.gfx.scale.y*=1.014;
+      // 乱流
+      p.vx+=(Math.random()-0.5)*0.06;
+      p.vx*=0.98;
+      p.vy*=0.994;
+      // 拡大（膨張）
+      p.gfx.scale.x*=p.expandX;p.gfx.scale.y*=p.expandY;
+      p.gfx.rotation+=p.rot;
       if(p.life<=0){try{p.gfx.destroy();}catch(e){}return false;}return true;
     });
+  }
+
+  // リアルな煙パフを1つスポーン
+  _spawnRealisticSmokePuff(sx, sy, danger, layer, list, baseVX=0, baseVY=0){
+    const layerCount=settings.particles==='high'?2:1;
+    for(let L=0;L<layerCount;L++){
+      const g=new PIXI.Graphics();
+      const baseR=(8+Math.random()*15)*(0.6+danger*0.7);
+      
+      // ユーザー要望の色: 灰、白、もっと赤い煙が出るように調整
+      let col;
+      const rnd=Math.random();
+      if(rnd<0.3) col=0xdddddd; // ほぼ白
+      else if(rnd<0.5) col=0x888888; // 灰色
+      else if(rnd<0.85) col=0x880000; // 少し明るめの赤
+      else col=0x330000; // 黒目の赤
+      
+      const baseAlpha=(0.12+danger*0.18)*(1-L*0.3);
+      g.beginFill(col,baseAlpha);
+      // ノイズベース: 小さな点を多数散布して粒子感を出す
+      const numDots=settings.particles==='high'?10:6;
+      for(let b=0;b<numDots;b++){
+        const ox=(Math.random()-0.5)*baseR*1.2;
+        const oy=(Math.random()-0.5)*baseR*1.2;
+        const dotR=1+Math.random()*baseR*0.25;
+        g.drawCircle(ox,oy,dotR);
+      }
+      g.endFill();
+
+      g.x=sx; g.y=sy;
+      g.alpha=0;
+      g.rotation=Math.random()*Math.PI*2;
+      layer.addChild(g);
+
+      const maxLife=0.6+Math.random()*0.7;
+      list.push({
+        gfx:g,
+        vx:baseVX+(Math.random()-0.5)*0.4,
+        vy:baseVY+(Math.random()-0.5)*0.4,
+        life:maxLife,
+        maxLife:maxLife,
+        decay:(0.01+Math.random()*0.012),
+        maxAlpha:baseAlpha*(0.8+Math.random()*0.4),
+        expandX:1.006+Math.random()*0.006,
+        expandY:1.004+Math.random()*0.005,
+        rot:(Math.random()-0.5)*0.01,
+      });
+    }
   }
 
   spawnParticle(x,y,color,downward=false,burst=false){
@@ -2786,7 +2896,7 @@ class GameRenderer{
     this.drawNextPieces();this.drawHold();
     this.updateScoreUI();
     this.updateBoardAnim(dt);
-    this.opponentPlayers.forEach(p=>this.drawOpponentBoard(p.id));
+    this.opponentPlayers.forEach(p=>{this.drawOpponentBoard(p.id);this._updateOpponentSmoke(p.id,dt);});
     this.drawGarbageMeter();
     this.updateParticlesEtc(dt);
     // ULTRA: animated scanline
@@ -2799,7 +2909,87 @@ class GameRenderer{
       this._bgScanline.endFill();
     }
   }
-}
+
+  // 敵ボードの煙エフェクト更新
+  _updateOpponentSmoke(pid, dt){
+    const d=this.opBoardData[pid];
+    if(!d||d.dead||!d.smokeLayer||settings.particles==='off'||settings.quality==='minimum')return;
+    if(!d.cont.visible)return;
+    if(!d.board){return;}
+    // 積み上がり計算
+    const boardArr=d.board;
+    const offset=boardArr.length>ROWS?HIDDEN:0;
+    let topRow=ROWS+HIDDEN;
+    for(let r=0;r<boardArr.length;r++){
+      if(boardArr[r]&&boardArr[r].some(v=>v)){topRow=r;break;}
+    }
+    // 敵は小さいボード（showAbove行付き）。可視上部4行以内で危機
+    const dangerStart=offset+4;
+    const danger=Math.max(0,Math.min(1,(dangerStart-topRow)/4));
+
+    // 枠の色を danger に応じて変更
+    if(d.bg){
+      if(danger>0){
+        d.bg.tint=0xff0000;
+        const pulse=0.7+0.3*Math.abs(Math.sin(performance.now()*0.004));
+        d.bg.alpha=pulse;
+      } else {
+        d.bg.tint=d.isBot?0xffbe0b:0x00f5ff;
+        d.bg.alpha=1;
+      }
+    }
+
+    if(danger<=0){
+      d.smokeParticles=d.smokeParticles.filter(p=>{
+        p.life-=0.025;p.gfx.alpha=Math.max(0,p.life*p.maxAlpha);
+        p.gfx.x+=p.vx;p.gfx.y+=p.vy;p.vx+=(Math.random()-0.5)*0.03;
+        p.gfx.scale.x*=p.expandX;p.gfx.scale.y*=p.expandY;p.gfx.rotation+=p.rot;
+        if(p.life<=0){try{p.gfx.destroy();}catch(e){}return false;}return true;
+      });
+      return;
+    }
+
+    // 煙レイヤー位置を cont に追従させる
+    d.smokeLayer.x=d.cont.x;d.smokeLayer.y=d.cont.y;
+
+    d.smokeTick=(d.smokeTick||0)+dt;
+    const rate=Math.max(40,140-danger*100);
+    if(d.smokeTick>=rate){
+      d.smokeTick=0;
+      // 量を調整（以前の2倍）
+      const n=settings.particles==='high'?Math.ceil(2+danger*2):1;
+      for(let i=0;i<n;i++){
+        const corner=Math.floor(Math.random()*4);
+        let sx,sy,svx,svy;
+        // スピードを1.3倍
+        const speed=(0.4+danger*0.8)*1.3;
+        if(corner===0){ // TL
+          sx=0; sy=0; svx=-speed; svy=-speed;
+        } else if(corner===1){ // TR
+          sx=d.boardW; sy=0; svx=speed; svy=-speed;
+        } else if(corner===2){ // BL
+          sx=0; sy=d.boardH; svx=-speed; svy=speed;
+        } else { // BR
+          sx=d.boardW; sy=d.boardH; svx=speed; svy=speed;
+        }
+        this._spawnRealisticSmokePuff(sx,sy,danger,d.smokeLayer,d.smokeParticles,svx,svy);
+      }
+    }
+    d.smokeParticles=d.smokeParticles.filter(p=>{
+      p.life-=p.decay;
+      const lifeRatio=p.life/p.maxLife;
+      let alpha;
+      if(lifeRatio>0.8){alpha=p.maxAlpha*(1-lifeRatio)*5;}
+      else if(lifeRatio>0.3){alpha=p.maxAlpha;}
+      else{alpha=p.maxAlpha*(lifeRatio/0.3);}
+      p.gfx.alpha=Math.max(0,alpha);
+      p.gfx.x+=p.vx;p.gfx.y+=p.vy;
+      p.vx+=(Math.random()-0.5)*0.04;p.vx*=0.98;p.vy*=0.992;
+      p.gfx.scale.x*=p.expandX;p.gfx.scale.y*=p.expandY;p.gfx.rotation+=p.rot;
+      if(p.life<=0){try{p.gfx.destroy();}catch(e){}return false;}return true;
+    });
+  }
+} // end class GameRenderer
 
 // ---- Input ----
 // ---- SpectatorRenderer ----
@@ -2923,6 +3113,7 @@ function handleKeyUp(e){
   if(e.code==='ArrowDown')stopSoftDrop();
 }
 function startDAS(dir){
+  if(gameState&&gameState._dcdActive) return;
   stopDAS();
   das=setTimeout(()=>{
     arr=setInterval(()=>{
@@ -3147,6 +3338,7 @@ function showDpad(visible) {
 
 // Called on pointer-down for DAS keys (left/right/down)
 function _dpadStartDAS(key, action, repeatMs) {
+  if(gameState&&gameState._dcdActive) return;
   _dpadStopKey(key);
   action(); // immediate first fire
   _dpadDasTimers[key] = {};
@@ -3673,6 +3865,12 @@ document.addEventListener('DOMContentLoaded',()=>{
   const arrIntV=document.getElementById('arr-interval-val');
   if(arrInt)arrInt.value=settings.arrInterval||20;
   if(arrIntV)arrIntV.textContent=(settings.arrInterval||20)+'ms';
+  const dcdDel=document.getElementById('dcd-delay-input');
+  const dcdDelV=document.getElementById('dcd-delay-val');
+  if(dcdDel){
+    dcdDel.value=settings.dcdDelay||0;
+    if(dcdDelV) dcdDelV.textContent=(settings.dcdDelay||0)+'ms';
+  }
   sfxVol=settings.sfxVolume/100;
   document.getElementById('chat-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendChat();});
   document.getElementById('gl-join-id-input').addEventListener('keydown',e=>{if(e.key==='Enter')glJoinRoom();});
@@ -3696,6 +3894,24 @@ document.addEventListener('DOMContentLoaded',()=>{
   }catch(e){}
   // Apply saved dpad layout
   applyDpadLayout();
+  // UIレイアウト設定の初期化
+  const ul=settings.uiLayout||{};
+  const bOffY=document.getElementById('board-offset-y');
+  const bOffYv=document.getElementById('board-offset-y-val');
+  const bSc=document.getElementById('board-scale');
+  const bScv=document.getElementById('board-scale-val');
+  const sOffY=document.getElementById('side-ui-offset-y');
+  const sOffYv=document.getElementById('side-ui-offset-y-val');
+  const sFsc=document.getElementById('side-ui-font-scale');
+  const sFscv=document.getElementById('side-ui-font-scale-val');
+  if(bOffY)bOffY.value=ul.boardOffsetY||0;
+  if(bOffYv)bOffYv.textContent=(ul.boardOffsetY||0)+'px';
+  if(bSc)bSc.value=ul.boardScale||100;
+  if(bScv)bScv.textContent=(ul.boardScale||100)+'%';
+  if(sOffY)sOffY.value=ul.sideUiOffsetY||0;
+  if(sOffYv)sOffYv.textContent=(ul.sideUiOffsetY||0)+'px';
+  if(sFsc)sFsc.value=ul.sideUiFontScale||100;
+  if(sFscv)sFscv.textContent=(ul.sideUiFontScale||100)+'%';
 
   // ダブルタップ拡大・ピンチ拡大を完全ブロック
   let _lastTap = 0;

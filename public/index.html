@@ -6,8 +6,8 @@
 <title>TETRIX ONLINE</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js" crossorigin="anonymous"></script>
 <style>
   :root {
     --neon-cyan: #00f5ff;
@@ -1023,6 +1023,28 @@
         <option value="on" selected>ON</option>
       </select>
     </div>
+    <h2 style="margin-top:1rem">🖥 UI LAYOUT</h2>
+    <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">ゲーム画面の枠・数字の位置とサイズ（ゲーム再起動で反映）</div>
+    <div class="settings-row">
+      <label>BOARD Y <span class="settings-val" id="board-offset-y-val">0px</span></label>
+      <input type="range" id="board-offset-y" min="-200" max="200" step="5" value="0"
+        oninput="document.getElementById('board-offset-y-val').textContent=this.value+'px';updateSetting('uiLayout',{boardOffsetY:+this.value})">
+    </div>
+    <div class="settings-row">
+      <label>BOARD SCALE <span class="settings-val" id="board-scale-val">100%</span></label>
+      <input type="range" id="board-scale" min="60" max="130" step="5" value="100"
+        oninput="document.getElementById('board-scale-val').textContent=this.value+'%';updateSetting('uiLayout',{boardScale:+this.value})">
+    </div>
+    <div class="settings-row">
+      <label>SCORE/UI Y <span class="settings-val" id="side-ui-offset-y-val">0px</span></label>
+      <input type="range" id="side-ui-offset-y" min="-200" max="200" step="5" value="0"
+        oninput="document.getElementById('side-ui-offset-y-val').textContent=this.value+'px';updateSetting('uiLayout',{sideUiOffsetY:+this.value})">
+    </div>
+    <div class="settings-row">
+      <label>SCORE/UI SIZE <span class="settings-val" id="side-ui-font-scale-val">100%</span></label>
+      <input type="range" id="side-ui-font-scale" min="50" max="180" step="5" value="100"
+        oninput="document.getElementById('side-ui-font-scale-val').textContent=this.value+'%';updateSetting('uiLayout',{sideUiFontScale:+this.value})">
+    </div>
     <h2 style="margin-top:1rem">⌨ CONTROLS</h2>
     <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">Left / Right key repeat settings</div>
     <div class="settings-row">
@@ -1036,7 +1058,11 @@
     </div>
     <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">加速中の繰り返し間隔 (0 = 瞬間移動)</div>
     <div class="settings-row">
-      <label>SOFT DROP <span class="settings-val" id="soft-drop-val2"></span></label>
+      <label>DCD (DAS CUT DELAY) <span class="settings-val" id="dcd-delay-val">0ms</span></label>
+      <input type="range" id="dcd-delay-input" min="0" max="250" step="5" value="0" oninput="updateSetting('dcdDelay',this.value)">
+    </div>
+    <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">出現時に先行入力を無効にする時間 (誤操作防止)</div>
+    <div class="settings-row">      <label>SOFT DROP <span class="settings-val" id="soft-drop-val2"></span></label>
       <span style="color:rgba(255,255,255,0.4);font-size:0.75rem">↑ See above</span>
     </div>
     <button class="btn btn-primary" onclick="toggleSettings()">CLOSE</button>
