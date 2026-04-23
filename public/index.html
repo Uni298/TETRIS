@@ -1,0 +1,1111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>TETRIX ONLINE</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
+<style>
+  :root {
+    --neon-cyan: #00f5ff;
+    --neon-pink: #ff006e;
+    --neon-yellow: #ffbe0b;
+    --neon-green: #06d6a0;
+    --dark-bg: #030712;
+    --dark-panel: #0a0f1e;
+    --border-glow: 0 0 10px var(--neon-cyan), 0 0 20px rgba(0,245,255,0.3);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html {
+    touch-action: manipulation;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+  body {
+    background: var(--dark-bg);
+    color: #fff;
+    font-family: 'Share Tech Mono', monospace;
+    overflow: hidden;
+    height: 100vh;
+    width: 100vw;
+    touch-action: manipulation;
+  }
+  /* No scanline overlay */
+  #screens { width: 100%; height: 100%; }
+  .screen { display: none; width: 100%; height: 100%; position: absolute; top: 0; left: 0; }
+  .screen.active { display: flex; }
+
+  /* LOBBY */
+  #lobby {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
+  }
+  .logo {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 5rem;
+    font-weight: 900;
+    letter-spacing: 0.2em;
+    background: linear-gradient(135deg, var(--neon-cyan), var(--neon-pink));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    text-shadow: none;
+    filter: drop-shadow(0 0 20px rgba(0,245,255,0.5));
+    margin-bottom: 0.5rem;
+    animation: logoGlow 2s ease-in-out infinite alternate;
+  }
+  @keyframes logoGlow {
+    from { filter: drop-shadow(0 0 20px rgba(0,245,255,0.5)); }
+    to { filter: drop-shadow(0 0 40px rgba(255,0,110,0.6)); }
+  }
+  .subtitle {
+    color: var(--neon-cyan);
+    letter-spacing: 0.5em;
+    font-size: 0.9rem;
+    margin-bottom: 3rem;
+    opacity: 0.7;
+  }
+  .lobby-card {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2.5rem;
+    width: 420px;
+    box-shadow: var(--border-glow), inset 0 0 30px rgba(0,245,255,0.05);
+  }
+  .lobby-card h2 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--neon-cyan);
+    font-size: 1.2rem;
+    margin-bottom: 1.5rem;
+    letter-spacing: 0.2em;
+  }
+  .input-group { margin-bottom: 1.2rem; }
+  .input-group label { display: block; color: rgba(255,255,255,0.5); font-size: 0.8rem; letter-spacing: 0.2em; margin-bottom: 0.5rem; }
+  .input-group input {
+    width: 100%;
+    background: rgba(0,0,0,0.5);
+    border: 1px solid rgba(0,245,255,0.2);
+    border-radius: 6px;
+    padding: 0.8rem 1rem;
+    color: var(--neon-cyan);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 0.3s, box-shadow 0.3s;
+  }
+  .input-group input:focus {
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 10px rgba(0,245,255,0.3);
+  }
+  .btn {
+    width: 100%;
+    padding: 0.9rem;
+    border: none;
+    border-radius: 6px;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.9rem;
+    font-weight: 700;
+    letter-spacing: 0.2em;
+    cursor: pointer;
+    transition: all 0.3s;
+    margin-bottom: 0.8rem;
+  }
+  .btn-primary {
+    background: linear-gradient(135deg, var(--neon-cyan), #0080ff);
+    color: #000;
+  }
+  .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 5px 20px rgba(0,245,255,0.4); }
+  .btn-secondary {
+    background: transparent;
+    border: 1px solid var(--neon-pink);
+    color: var(--neon-pink);
+  }
+  .btn-secondary:hover { background: rgba(255,0,110,0.1); box-shadow: 0 0 15px rgba(255,0,110,0.3); }
+  .btn-danger {
+    background: linear-gradient(135deg, var(--neon-pink), #8b0000);
+    color: #fff;
+  }
+  .divider { border: none; border-top: 1px solid rgba(255,255,255,0.1); margin: 1.5rem 0; }
+  .error-msg { color: var(--neon-pink); font-size: 0.8rem; margin-top: 0.5rem; text-align: center; min-height: 1.2em; }
+
+  /* WAITING ROOM */
+  #waiting {
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    overflow-y: auto;
+    padding: 1.5rem 0;
+    background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
+  }
+  .waiting-card {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2.5rem;
+    width: 500px;
+    max-width: 95vw;
+    text-align: center;
+    margin: auto 0;
+  }
+  .room-id-display {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2.5rem;
+    color: var(--neon-yellow);
+    letter-spacing: 0.5em;
+    margin: 1rem 0;
+    text-shadow: 0 0 20px rgba(255,190,11,0.5);
+  }
+  .player-list { margin: 1.5rem 0; text-align: left; }
+  .player-item {
+    display: flex; align-items: center; gap: 1rem;
+    padding: 0.8rem 1rem;
+    margin-bottom: 0.5rem;
+    background: rgba(0,0,0,0.3);
+    border-radius: 6px;
+    border-left: 3px solid var(--neon-cyan);
+  }
+  .player-avatar {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, var(--neon-cyan), var(--neon-pink));
+    display: flex; align-items: center; justify-content: center;
+    font-weight: 700; color: #000; font-size: 0.9rem;
+  }
+  .host-badge { background: var(--neon-yellow); color: #000; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.7rem; font-family: 'Orbitron', sans-serif; }
+  .wait-status { color: rgba(255,255,255,0.4); font-size: 0.85rem; margin: 1rem 0; }
+
+  /* GAME LOBBY (ゲーム後に戻る画面) */
+  #game-lobby {
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
+    gap: 1.2rem;
+  }
+  .game-lobby-card {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2rem 2.5rem;
+    width: 460px;
+    box-shadow: var(--border-glow), inset 0 0 30px rgba(0,245,255,0.05);
+  }
+  .game-lobby-card h2 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--neon-cyan);
+    font-size: 1rem;
+    margin-bottom: 1.2rem;
+    letter-spacing: 0.2em;
+  }
+  .lobby-player-name {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.4rem;
+    color: var(--neon-yellow);
+    letter-spacing: 0.15em;
+    margin-bottom: 0.3rem;
+  }
+  .rooms-list { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; max-height: 220px; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: rgba(0,245,255,0.3) transparent; padding-right: 4px; }
+  .rooms-list::-webkit-scrollbar { width: 4px; }
+  .rooms-list::-webkit-scrollbar-thumb { background: rgba(0,245,255,0.3); border-radius: 2px; }
+  .rooms-list::-webkit-scrollbar-track { background: transparent; }
+  .room-item {
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(0,0,0,0.35);
+    border: 1px solid rgba(0,245,255,0.15);
+    border-radius: 6px;
+    padding: 0.6rem 1rem;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .room-item:hover { border-color: rgba(0,245,255,0.5); background: rgba(0,245,255,0.06); }
+  .room-item-id { font-family: 'Orbitron', sans-serif; color: var(--neon-yellow); font-size: 0.95rem; letter-spacing: 0.15em; }
+  .room-item-players { color: rgba(255,255,255,0.5); font-size: 0.8rem; }
+  .room-item-join { color: var(--neon-cyan); font-size: 0.8rem; }
+  .no-rooms { color: rgba(255,255,255,0.3); font-size: 0.85rem; text-align: center; padding: 1rem 0; }
+  .prev-room-banner {
+    background: rgba(0,245,255,0.08);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 8px;
+    padding: 0.8rem 1rem;
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+  .prev-room-label { color: rgba(255,255,255,0.6); font-size: 0.78rem; }
+  .prev-room-id { font-family: 'Orbitron', sans-serif; color: var(--neon-yellow); font-size: 1rem; letter-spacing: 0.15em; }
+
+  /* GAME SCREEN */
+  #game {
+    flex-direction: row;
+    align-items: stretch;
+    background: var(--dark-bg);
+    position: relative;
+  }
+
+  /* CHAT — 画面左下固定、常時表示 */
+  #chat-panel {
+    position: fixed;
+    left: 0;
+    bottom: 0;
+    width: 220px;
+    z-index: 500;
+    display: flex;
+    flex-direction: column;
+    padding: 0.6rem;
+    pointer-events: none;
+  }
+  #chat-input-row {
+    display: flex;
+    gap: 0.3rem;
+    pointer-events: all;
+    margin-top: 0.4rem;
+  }
+  #chat-input {
+    flex: 1;
+    background: rgba(0,0,0,0.6);
+    border: 1px solid rgba(0,245,255,0.18);
+    border-radius: 4px;
+    padding: 0.35rem 0.55rem;
+    color: rgba(255,255,255,0.9);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.75rem;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  #chat-input:focus { border-color: rgba(0,245,255,0.5); box-shadow: 0 0 8px rgba(0,245,255,0.25); }
+  /* チャット入力中はゲームパネルのポインターイベントを無効化 */
+  #game:has(#chat-input:focus) #pixi-container { pointer-events: none; }
+  #chat-panel { touch-action: none; }
+  #chat-input-row { touch-action: manipulation; }
+  #chat-send {
+    background: rgba(0,245,255,0.15);
+    border: 1px solid rgba(0,245,255,0.25);
+    border-radius: 4px;
+    padding: 0.35rem 0.55rem;
+    color: var(--neon-cyan);
+    cursor: pointer;
+    font-size: 0.75rem;
+    font-weight: 700;
+    pointer-events: all;
+    transition: background 0.2s;
+  }
+  #chat-send:hover { background: rgba(0,245,255,0.25); }
+  #chat-messages {
+    max-height: 180px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
+    gap: 2px;
+    pointer-events: none;
+  }
+  .chat-msg {
+    color: rgba(255,255,255,0.82);
+    font-size: 0.72rem;
+    line-height: 1.4;
+    word-break: break-word;
+    text-shadow: 0 1px 4px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.8);
+    animation: chatFadeIn 0.2s ease;
+  }
+  @keyframes chatFadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .chat-msg .chat-name { color: rgba(0,245,255,0.85); font-weight: 700; }
+  .chat-msg.system { color: rgba(255,255,255,0.28); font-style: italic; font-size: 0.68rem; }
+
+  #pixi-container { flex: 1; position: relative; overflow: hidden; }
+  #pixi-container canvas { display: block; position: relative; z-index: 1; }
+
+  /* SETTINGS */
+  #settings-btn {
+    position: fixed;
+    top: 3.8rem; right: 0.6rem;
+    z-index: 1000;
+    background: transparent;
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 6px;
+    padding: 0.5rem 0.8rem;
+    color: var(--neon-cyan);
+    cursor: pointer;
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.8rem;
+    transition: all 0.3s;
+  }
+  #settings-btn:hover { background: rgba(0,245,255,0.1); }
+  #settings-modal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.8);
+    z-index: 2000;
+    align-items: center;
+    justify-content: center;
+  }
+  #settings-modal.open { display: flex; }
+  .settings-card {
+    background: var(--dark-panel);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2rem;
+    width: 400px;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  .settings-card h2 { font-family: 'Orbitron', sans-serif; color: var(--neon-cyan); margin-bottom: 1.5rem; letter-spacing: 0.2em; }
+  .settings-row { margin-bottom: 1.2rem; }
+  .settings-row label { display: block; color: rgba(255,255,255,0.6); font-size: 0.8rem; letter-spacing: 0.1em; margin-bottom: 0.4rem; }
+  .settings-row input[type=range] { width: 100%; accent-color: var(--neon-cyan); }
+  .settings-row select {
+    width: 100%;
+    background: rgba(0,0,0,0.5);
+    border: 1px solid rgba(0,245,255,0.2);
+    border-radius: 4px;
+    padding: 0.5rem;
+    color: var(--neon-cyan);
+    font-family: 'Share Tech Mono', monospace;
+  }
+  .settings-val { color: var(--neon-yellow); font-size: 0.85rem; float: right; }
+
+  /* RESULT */
+  #result-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    z-index: 3000;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+  }
+  #result-overlay.open { display: flex; }
+  .result-card {
+    background: var(--dark-panel);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 16px;
+    padding: 3rem;
+    text-align: center;
+    min-width: 400px;
+    animation: resultIn 0.5s ease-out;
+  }
+  @keyframes resultIn {
+    from { transform: scale(0.5) rotate(-10deg); opacity: 0; }
+    to { transform: scale(1) rotate(0deg); opacity: 1; }
+  }
+  .result-title { font-family: 'Orbitron', sans-serif; font-size: 2rem; margin-bottom: 0.5rem; }
+  .result-winner { font-size: 1.5rem; color: var(--neon-yellow); margin: 1rem 0; }
+  .result-scores { text-align: left; margin: 1.5rem 0; }
+  .result-score-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid rgba(255,255,255,0.1); }
+
+  /* NAME PROMPT MODAL */
+  #name-modal {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    background: radial-gradient(ellipse at center, #0d1b2a 0%, #030712 70%);
+    z-index: 9000;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+  }
+  #name-modal.hidden { display: none; }
+  .name-modal-logo {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 4rem;
+    font-weight: 900;
+    background: linear-gradient(135deg, var(--neon-cyan), var(--neon-pink));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    filter: drop-shadow(0 0 20px rgba(0,245,255,0.5));
+    margin-bottom: 0.4rem;
+    animation: logoGlow 2s ease-in-out infinite alternate;
+  }
+  .name-modal-sub {
+    color: var(--neon-cyan);
+    letter-spacing: 0.5em;
+    font-size: 0.8rem;
+    margin-bottom: 2.5rem;
+    opacity: 0.7;
+  }
+  .name-modal-card {
+    background: rgba(10,15,30,0.9);
+    border: 1px solid rgba(0,245,255,0.3);
+    border-radius: 12px;
+    padding: 2.5rem;
+    width: 380px;
+    box-shadow: 0 0 10px var(--neon-cyan), 0 0 20px rgba(0,245,255,0.3), inset 0 0 30px rgba(0,245,255,0.05);
+  }
+  .name-modal-card h2 {
+    font-family: 'Orbitron', sans-serif;
+    color: var(--neon-cyan);
+    font-size: 1.1rem;
+    margin-bottom: 1.5rem;
+    letter-spacing: 0.2em;
+  }
+
+  /* MUTATION MODE BADGE */
+  .mutation-badge {
+    display: inline-block;
+    background: linear-gradient(135deg, #ff006e, #8b0000);
+    color: #fff;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: 4px;
+    letter-spacing: 0.1em;
+    animation: mutBadgePulse 1.5s ease-in-out infinite alternate;
+  }
+  @keyframes mutBadgePulse {
+    from { box-shadow: 0 0 4px rgba(255,0,110,0.4); }
+    to   { box-shadow: 0 0 14px rgba(255,0,110,0.9); }
+  }
+
+  /* MUTATION TOGGLE in waiting room */
+  .mutation-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.7rem 1rem;
+    background: rgba(255,0,110,0.06);
+    border: 1px solid rgba(255,0,110,0.2);
+    border-radius: 8px;
+    margin: 1rem 0;
+  }
+  .mutation-row label {
+    color: #ff006e;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.75rem;
+    letter-spacing: 0.15em;
+  }
+  .toggle-switch {
+    position: relative;
+    width: 46px;
+    height: 24px;
+    cursor: pointer;
+  }
+  .toggle-switch input { opacity: 0; width: 0; height: 0; }
+  .toggle-track {
+    position: absolute;
+    inset: 0;
+    background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,0,110,0.3);
+    border-radius: 24px;
+    transition: all 0.3s;
+  }
+  .toggle-switch input:checked + .toggle-track {
+    background: rgba(255,0,110,0.4);
+    border-color: #ff006e;
+    box-shadow: 0 0 8px rgba(255,0,110,0.5);
+  }
+  .toggle-knob {
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 16px;
+    height: 16px;
+    background: rgba(255,255,255,0.6);
+    border-radius: 50%;
+    transition: transform 0.3s;
+  }
+  .toggle-switch input:checked ~ .toggle-knob { transform: translateX(22px); background: #ff006e; }
+
+  /* HOST SETTINGS PANEL */
+  .host-settings-panel {
+    background: rgba(0,245,255,0.04);
+    border: 1px solid rgba(0,245,255,0.15);
+    border-radius: 10px;
+    padding: 1rem;
+    margin: 0.8rem 0;
+    text-align: left;
+  }
+  .host-settings-panel h3 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.7rem;
+    color: var(--neon-cyan);
+    letter-spacing: 0.18em;
+    margin-bottom: 0.8rem;
+    opacity: 0.85;
+  }
+  .hs-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.65rem;
+    gap: 0.6rem;
+  }
+  .hs-row label {
+    color: rgba(255,255,255,0.55);
+    font-size: 0.72rem;
+    letter-spacing: 0.06em;
+    min-width: 110px;
+    flex-shrink: 0;
+  }
+  .hs-row input[type=range] {
+    flex: 1;
+    accent-color: var(--neon-cyan);
+    height: 4px;
+  }
+  .hs-val {
+    color: var(--neon-yellow);
+    font-family: 'Share Tech Mono', monospace;
+    font-size: 0.75rem;
+    min-width: 48px;
+    text-align: right;
+  }
+  .settings-view-panel {
+    background: rgba(0,245,255,0.03);
+    border: 1px solid rgba(0,245,255,0.1);
+    border-radius: 10px;
+    padding: 0.75rem 1rem;
+    margin: 0.8rem 0;
+    text-align: left;
+  }
+  .settings-view-panel h3 {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    color: rgba(0,245,255,0.5);
+    letter-spacing: 0.18em;
+    margin-bottom: 0.6rem;
+  }
+  .settings-view-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.75rem;
+    color: rgba(255,255,255,0.45);
+    padding: 0.25rem 0;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .settings-view-row:last-child { border-bottom: none; }
+
+  /* MOBILE TOGGLE BUTTON */
+  #mobile-toggle-btn {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    z-index: 9999;
+    background: rgba(10,15,30,0.92);
+    border: 1px solid rgba(0,245,255,0.4);
+    border-radius: 8px;
+    padding: 0.45rem 0.85rem;
+    color: var(--neon-cyan);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    cursor: pointer;
+    box-shadow: 0 0 10px rgba(0,245,255,0.2);
+    transition: all 0.2s;
+    user-select: none;
+  }
+  #mobile-toggle-btn.on {
+    border-color: var(--neon-green);
+    color: var(--neon-green);
+    box-shadow: 0 0 12px rgba(6,214,160,0.35);
+  }
+  #mobile-toggle-btn:active { transform: scale(0.94); }
+
+  /* SOFT DROP BUTTON (mobile only, bottom-right during game) */
+  #mobile-softdrop-btn {
+    display: none;
+    position: fixed;
+    bottom: 18px;
+    right: 14px;
+    z-index: 5000;
+    width: 68px;
+    height: 68px;
+    background: rgba(10,15,30,0.88);
+    border: 2px solid rgba(0,245,255,0.5);
+    border-radius: 50%;
+    color: var(--neon-cyan);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.6rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-align: center;
+    cursor: pointer;
+    box-shadow: 0 0 14px rgba(0,245,255,0.25);
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    gap: 2px;
+  }
+  #mobile-softdrop-btn .sd-arrow { font-size: 1.2rem; line-height: 1; }
+  #mobile-softdrop-btn.active-press {
+    background: rgba(0,245,255,0.18);
+    border-color: var(--neon-cyan);
+    box-shadow: 0 0 22px rgba(0,245,255,0.5);
+  }
+
+  /* Left-side action buttons (hold + rotate left) */
+  #mobile-left-btns {
+    display: none;
+    position: fixed;
+    bottom: 18px;
+    left: 14px;
+    z-index: 5000;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .mobile-action-btn {
+    width: 60px;
+    height: 60px;
+    background: rgba(10,15,30,0.88);
+    border: 2px solid rgba(255,190,11,0.5);
+    border-radius: 50%;
+    color: var(--neon-yellow);
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 700;
+    text-align: center;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    user-select: none;
+    -webkit-user-select: none;
+    touch-action: none;
+    gap: 1px;
+    box-shadow: 0 0 10px rgba(255,190,11,0.2);
+  }
+  .mobile-action-btn.active-press {
+    background: rgba(255,190,11,0.18);
+    border-color: var(--neon-yellow);
+    box-shadow: 0 0 18px rgba(255,190,11,0.5);
+  }
+
+  /* ===== DISPLAY D-PAD KEYBOARD ===== */
+  /* ===== DISPLAY KEYBOARD PARTS (each independently positioned) ===== */
+  .dpad-part {
+    display: none;
+    position: fixed;
+    z-index: 4500;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-user-drag: none;
+    cursor: default;
+    --dpad-scale: 1;
+  }
+
+  /* --- Cross (directional) --- */
+  /* cross size set by JS */
+  .dpad-btn {
+    position: absolute;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(10,15,30,0.82);
+    border: 2px solid rgba(0,245,255,0.45);
+    border-radius: 6px;
+    color: #00f5ff;
+    font-size: calc(1.3rem * var(--dpad-scale));
+    font-weight: 900;
+    touch-action: none;
+    transition: background 0.06s, box-shadow 0.06s;
+    box-shadow: 0 0 8px rgba(0,245,255,0.18);
+  }
+  .dpad-btn.dpad-active {
+    background: rgba(0,245,255,0.22);
+    border-color: #00f5ff;
+    box-shadow: 0 0 18px rgba(0,245,255,0.55);
+  }
+  /* Cross cell layout: 3x3 grid, arms only */
+  #dpad-btn-up     { top:0;     left:33.3%; width:33.3%; height:33.3%; border-radius:8px 8px 0 0; }
+  #dpad-btn-left   { top:33.3%; left:0;     width:33.3%; height:33.3%; border-radius:8px 0 0 8px; }
+  #dpad-btn-center { top:33.3%; left:33.3%; width:33.3%; height:33.3%;
+                     background:rgba(10,15,30,0.7); border-color:rgba(0,245,255,0.25);
+                     font-size:calc(0.55rem * var(--dpad-scale)); color:rgba(0,245,255,0.7);
+                     letter-spacing:.04em; font-family:'Share Tech Mono',monospace; }
+  #dpad-btn-right  { top:33.3%; left:66.6%; width:33.3%; height:33.3%; border-radius:0 8px 8px 0; }
+  #dpad-btn-down   { top:66.6%; left:33.3%; width:33.3%; height:33.3%; border-radius:0 0 8px 8px; }
+
+  /* --- Action buttons (SHIFT, Z) --- */
+  /* action button sizes set by JS applyDpadLayout */
+  .dpad-action-btn {
+    width: 100%; height: 100%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(10,15,30,0.82);
+    border: 2px solid rgba(255,190,11,0.5);
+    border-radius: 10px;
+    color: #ffbe0b;
+    font-family: 'Orbitron', sans-serif;
+    font-size: calc(0.85rem * var(--dpad-scale));
+    font-weight: 700;
+    touch-action: none;
+    box-shadow: 0 0 8px rgba(255,190,11,0.18);
+    transition: background 0.06s, box-shadow 0.06s;
+    pointer-events: none; /* clicks handled by parent */
+  }
+  #dpad-shift, #dpad-z, #dpad-harddrop { cursor: grab; }
+  #dpad-btn-shift, #dpad-btn-z, #dpad-btn-harddrop { pointer-events: auto; }
+  .dpad-action-btn .dpad-sub {
+    font-size: calc(0.48rem * var(--dpad-scale));
+    letter-spacing: .05em;
+    margin-top: 2px;
+    opacity: 0.7;
+  }
+  .dpad-action-btn.dpad-active {
+    background: rgba(255,190,11,0.2);
+    border-color: #ffbe0b;
+    box-shadow: 0 0 16px rgba(255,190,11,0.5);
+  }
+  /* Hard drop button: cyan variant */
+  .dpad-action-btn--cyan {
+    border-color: rgba(0,245,255,0.5);
+    color: #00f5ff;
+    box-shadow: 0 0 8px rgba(0,245,255,0.18);
+  }
+  .dpad-action-btn--cyan.dpad-active {
+    background: rgba(0,245,255,0.2);
+    border-color: #00f5ff;
+    box-shadow: 0 0 16px rgba(0,245,255,0.5);
+  }
+</style>
+</head>
+<body>
+<!-- Name Prompt Modal (shown on first load) -->
+<div id="name-modal">
+  <div class="name-modal-logo">TETRIX</div>
+  <div class="name-modal-sub">ONLINE MULTIPLAYER</div>
+  <div class="name-modal-card">
+    <h2>▸ ENTER YOUR NAME</h2>
+    <div class="input-group">
+      <label>PLAYER NAME</label>
+      <input type="text" id="name-modal-input" placeholder="Enter name..." maxlength="16" autocomplete="off">
+    </div>
+    <button class="btn btn-primary" onclick="submitNameModal()">ENTER LOBBY ▶</button>
+    <div class="error-msg" id="name-modal-error"></div>
+  </div>
+</div>
+
+<div id="screens">
+  <!-- LOBBY (legacy, hidden - redirect to game-lobby) -->
+  <div id="lobby" class="screen">
+    <div class="logo">TETRIX</div>
+  </div>
+
+  <!-- GAME LOBBY (ゲーム後に戻る画面) -->
+  <div id="game-lobby" class="screen">
+    <div style="text-align:center">
+      <div class="logo" style="font-size:2.8rem;margin-bottom:0.2rem">TETRIX</div>
+      <div class="lobby-player-name" id="gl-player-name"></div>
+    </div>
+    <div class="game-lobby-card">
+      <h2>▸ PREVIOUS ROOM</h2>
+      <div id="prev-room-banner" class="prev-room-banner" style="display:none">
+        <div>
+          <div class="prev-room-label">LAST ROOM</div>
+          <div class="prev-room-id" id="prev-room-id-display"></div>
+        </div>
+        <button class="btn btn-primary" style="width:auto;padding:0.5rem 1.2rem;margin:0" onclick="rejoinPrevRoom()">REJOIN ▶</button>
+      </div>
+      <h2>▸ OPEN ROOMS</h2>
+      <div class="rooms-list" id="rooms-list"><div class="no-rooms">No open rooms</div></div>
+      <button class="btn btn-secondary" style="margin-bottom:0.5rem" onclick="refreshRooms()">↺ REFRESH</button>
+    </div>
+    <div class="game-lobby-card" style="padding:1.5rem 2.5rem">
+      <h2>▸ CREATE NEW ROOM</h2>
+      <div style="display:flex;gap:0.6rem;align-items:center">
+        <input type="text" id="gl-room-id-input" placeholder="Custom ID (optional)" maxlength="6" style="flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(0,245,255,0.2);border-radius:6px;padding:0.6rem 0.8rem;color:var(--neon-cyan);font-family:'Share Tech Mono',monospace;font-size:0.9rem;outline:none;text-transform:uppercase">
+        <button class="btn btn-primary" style="width:auto;padding:0.6rem 1.2rem;margin:0" onclick="glCreateRoom()">CREATE</button>
+      </div>
+      <div style="margin-top:0.8rem;display:flex;gap:0.6rem;align-items:center">
+        <input type="text" id="gl-join-id-input" placeholder="Room ID to join" maxlength="6" style="flex:1;background:rgba(0,0,0,0.5);border:1px solid rgba(0,245,255,0.2);border-radius:6px;padding:0.6rem 0.8rem;color:var(--neon-cyan);font-family:'Share Tech Mono',monospace;font-size:0.9rem;outline:none;text-transform:uppercase">
+        <button class="btn btn-secondary" style="width:auto;padding:0.6rem 1.2rem;margin:0" onclick="glJoinRoom()">JOIN</button>
+      </div>
+      <div class="error-msg" id="gl-error"></div>
+    </div>
+    <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
+      <button class="btn btn-danger" style="width:auto;padding:0.5rem 1.5rem" onclick="glBackToTitle()">← CHANGE NAME</button>
+      <button class="btn" style="width:auto;padding:0.5rem 1.5rem;background:rgba(255,0,110,0.15);border:1px solid rgba(255,0,110,0.5);color:#ff006e;" onclick="resetAllSettings()">🗑 RESET SETTINGS</button>
+    </div>
+    <div id="dpad-layout-btn-wrap" style="display:none;margin-top:0.5rem;">
+      <button class="btn btn-secondary" style="width:auto;padding:0.5rem 1.5rem;border-color:rgba(255,190,11,0.6);color:#ffbe0b;" onclick="openDpadEditor()">🎮 ボタン配置を設定</button>
+    </div>
+  </div>
+
+  <!-- WAITING ROOM -->
+  <div id="waiting" class="screen">
+    <div class="waiting-card">
+      <h2 style="font-family:'Orbitron',sans-serif;color:var(--neon-cyan);letter-spacing:0.2em;margin-bottom:0.5rem;">WAITING ROOM</h2>
+      <div style="color:rgba(255,255,255,0.4);font-size:0.8rem;margin-bottom:0.5rem;">ROOM ID</div>
+      <div class="room-id-display" id="room-id-display">------</div>
+      <div style="color:rgba(255,255,255,0.5);font-size:0.75rem;margin-bottom:1.5rem;">Share this code with friends</div>
+      <div class="player-list" id="player-list"></div>
+      <div class="wait-status" id="wait-status">Waiting for players...</div>
+
+      <!-- MUTATION TOGGLE (host only) -->
+      <div id="mutation-row-wrap" class="mutation-row" style="display:none">
+        <label>⚡ MUTATION MODE</label>
+        <label class="toggle-switch">
+          <input type="checkbox" id="mutation-toggle" onchange="toggleMutation(this.checked)">
+          <div class="toggle-track"></div>
+          <div class="toggle-knob"></div>
+        </label>
+      </div>
+
+      <!-- HOST SETTINGS PANEL -->
+      <div id="host-settings-wrap" style="display:none">
+        <div class="host-settings-panel">
+          <h3>⚙ GAME SETTINGS</h3>
+
+          <div class="hs-row">
+            <label>⚡ Mutation Rate</label>
+            <input type="range" id="mutation-rate-input" min="0" max="100" step="5" value="60"
+              oninput="document.getElementById('mutation-rate-val').textContent=this.value+'%';updateRoomSetting('mutationRate',this.value)">
+            <span class="hs-val" id="mutation-rate-val">60%</span>
+          </div>
+
+          <div class="hs-row">
+            <label>⏩ Start Speed</label>
+            <input type="range" id="gravity-base-input" min="200" max="3000" step="100" value="1000"
+              oninput="document.getElementById('gravity-base-val').textContent=this.value+'ms';updateRoomSetting('gravityBase',this.value)">
+            <span class="hs-val" id="gravity-base-val">1000ms</span>
+          </div>
+
+          <div class="hs-row">
+            <label>📈 Speed/Level</label>
+            <input type="range" id="gravity-dec-input" min="0" max="200" step="10" value="80"
+              oninput="document.getElementById('gravity-dec-val').textContent=this.value+'ms';updateRoomSetting('gravityDec',this.value)">
+            <span class="hs-val" id="gravity-dec-val">80ms</span>
+          </div>
+
+          <div class="hs-row">
+            <label>🔝 Max Speed</label>
+            <input type="range" id="gravity-min-input" min="20" max="500" step="10" value="50"
+              oninput="document.getElementById('gravity-min-val').textContent=this.value+'ms';updateRoomSetting('gravityMin',this.value)">
+            <span class="hs-val" id="gravity-min-val">50ms</span>
+          </div>
+
+          <div class="hs-row">
+            <label>🔒 Lock Delay</label>
+            <input type="range" id="lock-delay-input" min="200" max="3000" step="100" value="1000"
+              oninput="document.getElementById('lock-delay-val').textContent=this.value+'ms';updateRoomSetting('lockDelay',this.value)">
+            <span class="hs-val" id="lock-delay-val">1000ms</span>
+          </div>
+
+          <div style="border-top:1px solid rgba(0,245,255,0.1);margin:0.7rem 0;"></div>
+
+          <!-- BOT SECTION -->
+          <h3 style="margin-bottom:0.6rem">🤖 BOT</h3>
+          <div class="hs-row">
+            <label>🧠 BOT Level</label>
+            <input type="range" id="bot-level-input" min="1" max="5" step="1" value="3"
+              oninput="document.getElementById('bot-level-val').textContent=getBotLevelLabel(+this.value);updateRoomSetting('botLevel',this.value)">
+            <span class="hs-val" id="bot-level-val">STRONG</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
+            <label>♟ Shogi Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="shogi-toggle" onchange="updateRoomSetting('shogiMode',this.checked?1:0)">
+              <div class="toggle-track" style="border-color:rgba(255,190,11,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">1P only</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
+            <label>🎮 Solo Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="solo-toggle" onchange="updateRoomSetting('soloMode',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(0,245,255,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">1P start</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
+            <label>🔴 Record Training</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="record-training-toggle" onchange="updateRoomSetting('recordTraining',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(255,0,110,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">AI data</span>
+          </div>
+
+          <div id="bot-list" style="margin-top:0.5rem"></div>
+          <button class="btn btn-secondary" onclick="addBot()" style="margin-top:0.4rem;padding:0.4rem 1rem;font-size:0.75rem">＋ ADD BOT</button>
+        </div>
+      </div>
+
+      <!-- NON-HOST VIEW-ONLY SETTINGS -->
+      <div id="settings-view-wrap" style="display:none">
+        <div class="settings-view-panel">
+          <h3>⚙ GAME SETTINGS</h3>
+          <div id="settings-view-content">
+            <div class="settings-view-row"><span>Waiting for host settings...</span></div>
+          </div>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="start-btn" onclick="startGame()" style="display:none">START GAME</button>
+      <button class="btn" id="force-end-waiting-btn" onclick="forceEndGame()" style="display:none;margin-top:0.5rem;background:rgba(255,0,110,0.15);border:1px solid rgba(255,0,110,0.5);color:#ff006e;width:100%;">⏹ FORCE END GAME</button>
+      <button class="btn btn-secondary" onclick="leaveRoom()" style="margin-top:0.5rem">LEAVE ROOM</button>
+    </div>
+  </div>
+
+  <!-- GAME -->
+  <div id="game" class="screen">
+    <div id="pixi-container"></div>
+  </div>
+</div>
+
+<!-- Global Chat Panel (visible on all screens) -->
+<div id="chat-panel" ontouchstart="event.stopPropagation()" ontouchmove="event.stopPropagation()" ontouchend="event.stopPropagation()">
+  <div id="chat-messages"></div>
+  <div id="chat-input-row">
+    <input type="text" id="chat-input" placeholder="Chat..." maxlength="100"
+      ontouchstart="event.stopPropagation()"
+      onfocus="this.dataset.focused='1'"
+      onblur="this.dataset.focused=''">
+    <button id="chat-send"
+      onclick="sendChat()"
+      ontouchstart="event.stopPropagation(); event.preventDefault(); sendChat()">▶</button>
+  </div>
+</div>
+
+<!-- Settings button (shown in game) -->
+<button id="settings-btn" onclick="toggleSettings()" style="display:none">⚙ SETTINGS</button>
+
+<!-- Settings Modal -->
+<div id="settings-modal">
+  <div class="settings-card">
+    <h2>⚙ GRAPHICS</h2>
+    <div class="settings-row">
+      <label>GHOST PIECE OPACITY <span class="settings-val" id="ghost-val">40%</span></label>
+      <input type="range" id="ghost-opacity" min="0" max="100" value="40" oninput="updateSetting('ghost',this.value)">
+    </div>
+    <div class="settings-row">
+      <label>QUALITY <span class="settings-val" id="quality-val">ULTRA</span></label>
+      <select id="quality-select" onchange="updateSetting('quality',this.value)">
+        <option value="minimum">MINIMUM (最軽量)</option>
+        <option value="low">LOW</option>
+        <option value="medium">MEDIUM</option>
+        <option value="high">HIGH</option>
+        <option value="ultra" selected>ULTRA (Immersive)</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>PARTICLE EFFECTS</label>
+      <select id="particles-select" onchange="updateSetting('particles',this.value)">
+        <option value="off">OFF</option>
+        <option value="low">LOW</option>
+        <option value="high" selected>HIGH</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>BOARD SHAKE</label>
+      <select id="shake-select" onchange="updateSetting('shake',this.value)">
+        <option value="off">OFF</option>
+        <option value="on" selected>ON</option>
+      </select>
+    </div>
+    <div class="settings-row">
+      <label>SFX VOLUME <span class="settings-val" id="sfx-val">70%</span></label>
+      <input type="range" id="sfx-volume" min="0" max="100" value="70" oninput="updateSetting('sfx',this.value)">
+    </div>
+    <div class="settings-row">
+      <label>SOFT DROP SPEED <span class="settings-val" id="soft-drop-val">50ms</span></label>
+      <input type="range" id="soft-drop-interval" min="10" max="200" step="5" value="50" oninput="updateSetting('softDropInterval',this.value)">
+    </div>
+    <div class="settings-row">
+      <label>TILT ON SPIN</label>
+      <select id="tilt-select" onchange="updateSetting('tilt',this.value)">
+        <option value="off">OFF</option>
+        <option value="on" selected>ON</option>
+      </select>
+    </div>
+    <h2 style="margin-top:1rem">⌨ CONTROLS</h2>
+    <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">Left / Right key repeat settings</div>
+    <div class="settings-row">
+      <label>DAS DELAY <span class="settings-val" id="das-delay-val">133ms</span></label>
+      <input type="range" id="das-delay-input" min="0" max="500" step="5" value="133" oninput="updateSetting('dasDelay',this.value)">
+    </div>
+    <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">長押しして加速するまでの時間 (小さい = 即加速)</div>
+    <div class="settings-row">
+      <label>ARR INTERVAL <span class="settings-val" id="arr-interval-val">20ms</span></label>
+      <input type="range" id="arr-interval-input" min="0" max="200" step="5" value="20" oninput="updateSetting('arrInterval',this.value)">
+    </div>
+    <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">加速中の繰り返し間隔 (0 = 瞬間移動)</div>
+    <div class="settings-row">
+      <label>SOFT DROP <span class="settings-val" id="soft-drop-val2"></span></label>
+      <span style="color:rgba(255,255,255,0.4);font-size:0.75rem">↑ See above</span>
+    </div>
+    <button class="btn btn-primary" onclick="toggleSettings()">CLOSE</button>
+    <button class="btn" onclick="resetAllSettings()" style="margin-top:0.5rem;background:rgba(255,0,110,0.15);border:1px solid rgba(255,0,110,0.5);color:#ff006e;width:100%;">🗑 RESET ALL SETTINGS</button>
+  </div>
+</div>
+
+<!-- Result Overlay -->
+<div id="result-overlay">
+  <div class="result-card">
+    <div class="result-title" id="result-title">GAME OVER</div>
+    <div class="result-winner" id="result-winner"></div>
+    <div class="result-scores" id="result-scores"></div>
+    <button class="btn btn-primary" onclick="returnToRoom()">RETURN TO ROOM</button>
+    <button class="btn btn-secondary" onclick="backToLobby()" style="margin-top:0.5rem">BACK TO LOBBY</button>
+  </div>
+</div>
+
+<!-- Mobile Controls Toggle (always visible corner) -->
+<button id="mobile-toggle-btn" onclick="toggleMobileControls()">📱 MOBILE<br>OFF</button>
+
+<!-- Mobile Game Buttons (game only, mobile ON) -->
+<!-- Right side: Soft Drop button -->
+<div id="mobile-softdrop-btn">
+  <div class="sd-arrow">▼</div>
+  <div>SOFT<br>DROP</div>
+</div>
+
+<!-- Left side action buttons: Hold (top), RotateLeft (bottom) -->
+<div id="mobile-left-btns">
+  <div id="mobile-hold-btn" class="mobile-action-btn">
+    <div>📦</div><div style="font-size:0.55rem">HOLD</div>
+  </div>
+  <div id="mobile-rotleft-btn" class="mobile-action-btn">
+    <div>↺</div><div style="font-size:0.55rem">ROT L</div>
+  </div>
+</div>
+
+<!-- Display Keyboard: Cross (directional) -->
+<div id="dpad-cross" class="dpad-part">
+  <div id="dpad-btn-up"     class="dpad-btn">↻</div>
+  <div id="dpad-btn-left"   class="dpad-btn">◀</div>
+  <div id="dpad-btn-center" class="dpad-btn">▲<br><span style="font-size:0.35em;letter-spacing:.03em">HARD</span></div>
+  <div id="dpad-btn-right"  class="dpad-btn">▶</div>
+  <div id="dpad-btn-down"   class="dpad-btn">▼</div>
+</div>
+
+<!-- Display Keyboard: SHIFT (Hold) -->
+<div id="dpad-shift" class="dpad-part">
+  <div id="dpad-btn-shift" class="dpad-action-btn">
+    <span>SHIFT</span><span class="dpad-sub">HOLD</span>
+  </div>
+</div>
+
+<!-- Display Keyboard: Z (Rotate Left) -->
+<div id="dpad-z" class="dpad-part">
+  <div id="dpad-btn-z" class="dpad-action-btn">
+    <span>Z</span><span class="dpad-sub">ROT ↺</span>
+  </div>
+</div>
+
+<!-- Display Keyboard: Hard Drop button -->
+<div id="dpad-harddrop" class="dpad-part">
+  <div id="dpad-btn-harddrop" class="dpad-action-btn dpad-action-btn--cyan">
+    <span>▲▲</span><span class="dpad-sub">HARD</span>
+  </div>
+</div>
+
+
+<script src="game.js"></script>
+</body>
+</html>
