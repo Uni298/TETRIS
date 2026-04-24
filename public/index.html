@@ -6,8 +6,8 @@
 <title>TETRIX ONLINE</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Share+Tech+Mono&display=swap" rel="stylesheet">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js" crossorigin="anonymous"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js" crossorigin="anonymous"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pixi.js/7.3.2/pixi.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.6.1/socket.io.min.js"></script>
 <style>
   :root {
     --neon-cyan: #00f5ff;
@@ -1058,11 +1058,12 @@
     </div>
     <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">加速中の繰り返し間隔 (0 = 瞬間移動)</div>
     <div class="settings-row">
-      <label>DCD (DAS CUT DELAY) <span class="settings-val" id="dcd-delay-val">0ms</span></label>
-      <input type="range" id="dcd-delay-input" min="0" max="250" step="5" value="0" oninput="updateSetting('dcdDelay',this.value)">
+      <label>DCD DELAY <span class="settings-val" id="dcd-delay-val">0ms</span></label>
+      <input type="range" id="dcd-delay-input" min="0" max="500" step="10" value="0" oninput="updateSetting('dcdDelay',this.value)">
     </div>
-    <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">出現時に先行入力を無効にする時間 (誤操作防止)</div>
-    <div class="settings-row">      <label>SOFT DROP <span class="settings-val" id="soft-drop-val2"></span></label>
+    <div style="color:rgba(255,255,255,0.25);font-size:0.65rem;margin:-0.3rem 0 0.5rem;letter-spacing:0.03em;">DAS Cut Delay: ミノ出現直後のDAS誤爆を防ぐ遅延</div>
+    <div class="settings-row">
+      <label>SOFT DROP <span class="settings-val" id="soft-drop-val2"></span></label>
       <span style="color:rgba(255,255,255,0.4);font-size:0.75rem">↑ See above</span>
     </div>
     <button class="btn btn-primary" onclick="toggleSettings()">CLOSE</button>

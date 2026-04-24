@@ -1027,6 +1027,7 @@ function createRoom(roomId) {
     players: [], bots: [], started: false, host: null, chat: [],
     bagSeed: Math.floor(Math.random()*1000000),
     mutationMode: false, mutationSeed: 0, shogiMode: false,
+    lastActivity: Date.now(),
     roomSettings: {
       mutationRate: 60, gravityBase: 1000, gravityDec: 80,
       gravityMin: 50, lockDelay: 1000, botLevel: 3, shogiMode: false,
@@ -1039,6 +1040,7 @@ function getRoom(roomId) { return rooms[roomId]; }
 function allPlayers(room) { return [...room.players, ...room.bots]; }
 
 function broadcastRoomUpdate(room, roomId) {
+  room.lastActivity = Date.now();
   const allP = allPlayers(room).map(p => ({
     id: p.id, name: p.name, isBot: !!p.isBot, botLevel: p.botLevel || null
   }));
@@ -1408,3 +1410,14 @@ function addChatSys(roomId, text) {
 
 const PORT=process.env.PORT||3000;
 server.listen(PORT,()=>console.log(`Tetrix server on http://localhost:${PORT}`));
+
+// Empty room cleanup (rooms with no players for 10 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [rid, room] of Object.entries(rooms)) {
+    if (allPlayers(room).length === 0) {
+      delete rooms[rid];
+      console.log(`[cleanup] Empty room ${rid} deleted`);
+    }
+  }
+}, 60000);

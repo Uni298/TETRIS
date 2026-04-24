@@ -1,30 +1,5 @@
 // ===== TETRIX ONLINE =====
 
-// ---- Socket ----
-const socket=io();
-let myId=null,roomId=null,myName='',isHost=false,roomPlayers=[];
-let shogiMode=false;
-let isSoloGame=false;
-let isSpectator=false; // 観戦モードフラグ
-socket.on('connect',()=>{myId=socket.id;});
-
-// ---- Name Modal (initial screen) ----
-function getSavedName(){
-  try{const m=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_name='));return m?decodeURIComponent(m.split('=')[1].trim()):''}catch(e){return '';}
-}
-function saveName(name){
-  document.cookie='tetrix_name='+encodeURIComponent(name)+'; max-age=31536000; path=/';
-}
-function submitNameModal(){
-  const inp=document.getElementById('name-modal-input');
-  const name=inp.value.trim();
-  if(!name){document.getElementById('name-modal-error').textContent='Please enter a name';return;}
-  myName=name;
-  saveName(name);
-  document.getElementById('name-modal').classList.add('hidden');
-  showGameLobby(null);
-}
-
 // ---- Settings ----
 let mobileControlsEnabled = false; // Mobile controls toggle
 let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,
@@ -98,6 +73,47 @@ if (settings.dpad.harddrop.y === 80 && settings.dpad.harddrop.x >= 75 && setting
   saveSettings();
 }
 
+// ---- Socket ----
+const socket=io({
+  reconnection:true,
+  reconnectionAttempts:Infinity,
+  reconnectionDelay:1000,
+  reconnectionDelayMax:5000,
+});
+let myId=null,roomId=null,myName='',isHost=false,roomPlayers=[];
+let _reconnecting=false;
+let shogiMode=false;
+let isSoloGame=false;
+let isSpectator=false; // 観戦モードフラグ
+socket.on('connect',()=>{
+  myId=socket.id;
+  if(_reconnecting){
+    _reconnecting=false;
+    const banner=document.getElementById('reconnect-banner');
+    if(banner)banner.remove();
+    // 切断前のルームへ再接続
+    if(_lastUsedRoomId&&myName){
+      socket.emit('rejoin_room',{roomId:_lastUsedRoomId,name:myName});
+    }
+  }
+});
+socket.on('disconnect',()=>{
+  _reconnecting=true;
+  // 再接続バナーを表示
+  let banner=document.getElementById('reconnect-banner');
+  if(!banner){
+    banner=document.createElement('div');
+    banner.id='reconnect-banner';
+    banner.style.cssText='position:fixed;top:0;left:0;right:0;z-index:9999;background:rgba(255,0,110,0.85);color:#fff;font-family:Orbitron,sans-serif;font-size:0.8rem;text-align:center;padding:0.5rem;letter-spacing:0.1em;';
+    banner.textContent='⚠ CONNECTION LOST — RECONNECTING...';
+    document.body.appendChild(banner);
+  }
+});
+socket.on('reconnect',()=>{
+  const banner=document.getElementById('reconnect-banner');
+  if(banner){banner.textContent='✓ RECONNECTED';setTimeout(()=>banner.remove(),1500);}
+});
+
 // ---- Screen ----
 function applyUiLayout(){
   // ゲーム中なら boardWrap のY座標だけリアルタイム更新（スケール・その他は次ゲームで反映）
@@ -123,6 +139,23 @@ function showScreen(id){
   showDpad(inGame);
   const dpadBtnWrap=document.getElementById('dpad-layout-btn-wrap');
   if(dpadBtnWrap)dpadBtnWrap.style.display=(mobileControlsEnabled&&id==='game-lobby')?'block':'none';
+}
+
+// ---- Name Modal (initial screen) ----
+function getSavedName(){
+  try{const m=document.cookie.split(';').find(c=>c.trim().startsWith('tetrix_name='));return m?decodeURIComponent(m.split('=')[1].trim()):''}catch(e){return '';}
+}
+function saveName(name){
+  document.cookie='tetrix_name='+encodeURIComponent(name)+'; max-age=31536000; path=/';
+}
+function submitNameModal(){
+  const inp=document.getElementById('name-modal-input');
+  const name=inp.value.trim();
+  if(!name){document.getElementById('name-modal-error').textContent='Please enter a name';return;}
+  myName=name;
+  saveName(name);
+  document.getElementById('name-modal').classList.add('hidden');
+  showGameLobby(null);
 }
 
 // ---- Mutation Mode ----
@@ -473,6 +506,7 @@ socket.on('room_created',({roomId:rid,players})=>{
   roomId=rid;_lastUsedRoomId=rid;roomPlayers=players;isHost=true;
   document.getElementById('room-id-display').textContent=rid;
   showScreen('waiting');updatePlayerList(players);
+  resetRoomInactivityTimer();
   document.getElementById('mutation-row-wrap').style.display='flex';
   document.getElementById('host-settings-wrap').style.display='block';
   document.getElementById('settings-view-wrap').style.display='none';
@@ -489,6 +523,8 @@ socket.on('room_joined',({roomId:rid,players})=>{
 });
 socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,roomSettings:rs})=>{
   roomPlayers=players;isHost=(socket.id===host);updatePlayerList(players);
+  if(!started)resetRoomInactivityTimer();
+  else{if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);_removeInactivityBtn();}
   const total=players.length;
   const isSoloAllowed=rs&&rs.soloMode;
   const canStart=isHost&&!started&&(total>=2||(isSoloAllowed&&total>=1));
@@ -608,6 +644,9 @@ function updatePlayerList(players){
 
 // ---- Countdown then start ----
 socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo})=>{
+  // ゲーム開始時は非アクティブタイマーをクリア
+  if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);
+  _removeInactivityBtn();
   roomPlayers=players;
   mutationMode=!!mu;
   mutationSeed=ms||0;
@@ -831,27 +870,40 @@ class TetrisGame{
   }
 
   spawnPiece(){
-    this._dcdActive=true;
-    if(settings.dcdDelay>0){
-      setTimeout(()=>{this._dcdActive=false;},settings.dcdDelay);
-    }else{
-      this._dcdActive=false;
-    }
-    const nextEntry=this.nextQueue.shift();
+    const entry=this.nextQueue.shift();
     this.nextQueue.push(this._makeNextEntry(this.bag.next()));
-    const {type, customShape}=nextEntry;
+    const {type, customShape}=entry;
     this.current={type,rotation:0,x:3,y:SPAWN_Y,customShape};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
     if(renderer)renderer._wallBumpActive=false;
-    // Game over: ブロックが非表示行（HIDDEN行以内）まで積み上がったらゲームオーバー
-    // board[0..HIDDEN-1]が非表示行。ここに何かブロックがあればゲームオーバー
-    let alive=true;
-    outer: for(let r=0;r<HIDDEN;r++){
-      for(let c=0;c<COLS;c++){
-        if(this.board[r][c]){alive=false;break outer;}
+    // Game over: スポーンしたミノが盤面の既存ブロックと重なったらゲームオーバー
+    // SPAWN_Y=-3, HIDDEN=3 なのでミノは board[-3..0] 付近にスポーン
+    // ny が負の場合は配列外だが、isValid で使う board インデックスは ny+HIDDEN_OFFSET になる
+    // ここでは isValid を直接使って重なりをチェック
+    const spawnShape=this.getShape(this.current.type,0,this.current.customShape||null);
+    let overlaps=false;
+    outer2: for(let r=0;r<spawnShape.length;r++){
+      for(let c=0;c<spawnShape[r].length;c++){
+        if(!spawnShape[r][c])continue;
+        const ny=this.current.y+r,nx=this.current.x+c;
+        // ny が 0以上 = 盤面内（board[ny][nx]をチェック）
+        // ny が 負 = 盤面上部の隠れ行。HIDDEN offsetを加えた絶対行でチェック
+        // ただし SPAWN_Y=-3, HIDDEN=3 なのでスポーン直後のrは0なので
+        // ny = -3 + 0 = -3 → 盤面外なのでチェック不要
+        // ny = -3 + 1 = -2 → 盤面外
+        // ny = -3 + 2 = -1 → 盤面外  
+        // ny = -3 + 3 = 0 → board[0]（HIDDEN行の最初）= チェック必要
+        // つまり積み上がってHIDDEN行内にブロックがあれば当たる
+        if(ny>=0&&ny<ROWS+HIDDEN&&nx>=0&&nx<COLS&&this.board[ny][nx]){overlaps=true;break outer2;}
       }
     }
-    if(!alive){this.alive=false;}
+    if(overlaps){this.alive=false;}
+    // 追加チェック: ミノの最下行がスポーンのy+形状の高さに来た時、
+    // 可視領域の一番上(HIDDEN行目)に既存ブロックがあればゲームオーバー
+    if(!overlaps){
+      // isValid でスポーン位置が無効 = 即ゲームオーバー
+      if(!this.isValid(this.current)){this.alive=false;}
+    }
   }
 
   getShape(type,rot,customShape){
@@ -943,7 +995,6 @@ class TetrisGame{
   }
 
   move(dx){
-    if(this._dcdActive) return false;
     if(this.isValid(this.current,dx,0)){
       this.current.x+=dx;this.lastSpin=null;this.tryResetLock();SFX.move();
       return true;
@@ -1396,8 +1447,7 @@ class GameRenderer{
       const borderCol=isBot?0xffbe0b:0x00f5ff;
       const bg=new PIXI.Graphics();
       bg.beginFill(0x000010,0.9);bg.drawRect(0,0,oBW,oBH);bg.endFill();
-      bg.lineStyle(1,0xffffff,isBot?0.45:0.2);bg.drawRect(0,0,oBW,oBH);
-      bg.tint=borderCol;
+      bg.lineStyle(1,borderCol,isBot?0.45:0.2);bg.drawRect(0,0,oBW,oBH);
       // Grid lines for HIGH/ULTRA
       if(settings.quality==='high'||settings.quality==='ultra'){
         bg.lineStyle(0.3,0x001833,0.4);
@@ -1424,7 +1474,7 @@ class GameRenderer{
       // 煙レイヤー（cont の外に出るため root に追加）
       const opSmokeLayer=new PIXI.Container();this.root.addChild(opSmokeLayer);
       this.opBoardData[p.id]={
-        id:p.id,name:p.name,cont,bg,boardGfx,scoreTxt:stxt,nextGfx,holdGfx,cell:oCell,origX:RX,origY:by,
+        cont,boardGfx,scoreTxt:stxt,nextGfx,holdGfx,cell:oCell,origX:RX,origY:by,
         board:null,currentPiece:null,nextPieces:null,holdPiece:null,
         shakeX:0,shakeY:0,tilt:0,tiltTarget:0,dead:false,
         boardW:oBW,boardH:oBH,showAbove,isBot,
@@ -1492,9 +1542,8 @@ class GameRenderer{
     for(let r=0;r<=ROWS;r++){bg.moveTo(0,r*CELL);bg.lineTo(BOARD_W,r*CELL);}
     this.boardCont.addChild(bg);
     this.boardBorder=new PIXI.Graphics();
-    this.boardBorder.lineStyle(2,0xffffff,0.8);
+    this.boardBorder.lineStyle(2,0x00f5ff,0.8);
     this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
-    this.boardBorder.tint=0x00f5ff;
     this.boardCont.addChild(this.boardBorder);
     this.boardGfx=new PIXI.Graphics();this.boardCont.addChild(this.boardGfx);
     this.ghostGfx=new PIXI.Graphics();this.boardCont.addChild(this.ghostGfx);
@@ -1769,8 +1818,7 @@ class GameRenderer{
   // スピン確定時のみ傾く
   onSpinTilt(dir){
     if(settings.tilt!=='on')return;
-    // 75% intensity: 0.065 * 0.75 = 0.04875
-    this.tiltTarget=dir>0?0.048: -0.048;
+    this.tiltTarget=dir>0?0.049:-0.049;
     setTimeout(()=>{this.tiltTarget=0;},292); // T-spin tilt 1.2倍速
   }
 
@@ -1877,6 +1925,7 @@ class GameRenderer{
       type: piece.type
     };
     this._afterimageAlpha = 0.72; // start semi-transparent
+    this._afterimageLife = 300; // ms to keep afterimage
     this.afterimageGfx.alpha = this._afterimageAlpha;
     // Draw immediately
     this._drawAfterimage();
@@ -1952,8 +2001,7 @@ class GameRenderer{
     if(count>=4||allClear)this.boardOffsetY=Math.max(this.boardOffsetY,24);
     else if(count>=2)this.boardOffsetY=Math.max(this.boardOffsetY,10);
     if(settings.tilt==='on'&&spinType&&spinType!=='MINI_TSPIN'){
-      // 75% intensity: 0.07 * 0.75 = 0.0525
-      this.tiltTarget=spinType.startsWith('T')?0.052:-0.052;
+      this.tiltTarget=spinType.startsWith('T')?0.0525:-0.0525;
       setTimeout(()=>{this.tiltTarget=0;},292);
     }
     if(settings.particles!=='off'&&settings.quality!=='minimum'){
@@ -1966,6 +2014,10 @@ class GameRenderer{
         }
         for(let i=0;i<25;i++)this.spawnParticle(this.mainBX+BOARD_W/2,this.mainBY+dr*CELL+CELL/2,0xffffff,false,true);
       });
+      // テトリス（4ライン消し）: 枠から破片が飛び出す演出
+      if(count>=4&&settings.particles!=='off'){
+        this._spawnBorderBreakEffect(count);
+      }
       // T-SPIN DOUBLE: 2つの塊エフェクト
       if(isTDouble&&settings.particles!=='off')this._spawnTSpinChunks(cleared,2,0xcc44ff);
       // T-SPIN TRIPLE: 3つの塊エフェクト
@@ -2095,8 +2147,11 @@ class GameRenderer{
     if(ren>=6&&settings.quality!=='low'&&settings.quality!=='minimum'){
       // Board edge glow flash
       if(this.boardBorder){
-        this.boardBorder.tint=renColor;
-        setTimeout(()=>{if(this.boardBorder)this.boardBorder.tint=0xffffff;},150);
+        this.boardBorder.clear();
+        this.boardBorder.lineStyle(3,renColor,0.95);
+        this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+        this._borderNormal=false;
+        setTimeout(()=>{if(this.boardBorder){this._borderNormal=false;}},150);
       }
       // Screen flash overlay
       this._flashAlpha=Math.min(1.5, this._flashAlpha+0.4*intensity);
@@ -2263,6 +2318,54 @@ class GameRenderer{
     }
   }
 
+  // テトリス消し: 枠の4辺から「くの字」の棒が重力で落下する演出
+  _spawnBorderBreakEffect(lineCount){
+    if(settings.quality==='minimum'||settings.quality==='low')return;
+    const sc2=this._uiScale||1;
+    const bx=this.mainBX, by=this.mainBY;
+    const bw=BOARD_W*sc2, bh2=BOARD_H*sc2;
+    const numRods=settings.particles==='high'?14:8;
+    // 枠の4辺からランダムにスポーン
+    for(let i=0;i<numRods;i++){
+      const side=Math.floor(Math.random()*4);
+      let px,py;
+      if(side===0){px=bx+Math.random()*bw;py=by;} // 上辺
+      else if(side===1){px=bx+Math.random()*bw;py=by+bh2;} // 下辺
+      else if(side===2){px=bx;py=by+Math.random()*bh2;} // 左辺
+      else{px=bx+bw;py=by+Math.random()*bh2;} // 右辺
+      // くの字の棒を描画（2本のセグメントを中心で折り曲げ）
+      const g=new PIXI.Graphics();
+      const len=CELL*(0.5+Math.random()*0.6)*sc2;
+      const bendAngle=(Math.random()-0.5)*1.2; // 折れ曲がり角度
+      const col=0x00f5ff;
+      const col2=0xffffff;
+      g.lineStyle(2,col,0.95);
+      // 第1セグメント (中心から)
+      const seg1X=Math.cos(bendAngle)*len*0.5;
+      const seg1Y=-Math.sin(bendAngle)*len*0.5;
+      g.moveTo(0,0);g.lineTo(seg1X,seg1Y);
+      // 第2セグメント (折れ曲がって)
+      const seg2Angle=bendAngle+(Math.random()-0.5)*1.5;
+      const seg2X=seg1X+Math.cos(seg2Angle)*len*0.5;
+      const seg2Y=seg1Y-Math.sin(seg2Angle)*len*0.5;
+      g.lineTo(seg2X,seg2Y);
+      // 端点に小さい丸
+      g.lineStyle(0);
+      g.beginFill(col2,0.9);g.drawCircle(0,0,2);g.endFill();
+      g.beginFill(col,0.8);g.drawCircle(seg2X,seg2Y,1.5);g.endFill();
+      g.x=px;g.y=py;
+      this.effectsLayer.addChild(g);
+      // 初速: ランダム方向、重力で下に落ちる
+      const vx=(Math.random()-0.5)*4+((side===2)?-1:(side===3)?1:0);
+      const vy=(Math.random()-0.5)*2+((side===0)?-2:0.5); // 上辺からは上方向に
+      const rot=(Math.random()-0.5)*0.18;
+      this._lightningBolts.push({
+        gfx:g,vx,vy,life:1,decay:0.016+Math.random()*0.01,
+        rot,isChunk:true
+      });
+    }
+  }
+
   // B2B 雷エフェクト: 枠の周囲をジグザグの雷が走る
   _triggerLightning(b2bCount){
     if(settings.quality==='low'||settings.quality==='minimum')return;
@@ -2329,9 +2432,18 @@ class GameRenderer{
         this.shakePower=Math.max(this.shakePower,power*0.7);
       },40); // 1.5倍速（60ms→40ms）
     }
-    this.boardBorder.tint=0xff3333;
+    // ガベージフラッシュ: 枠を赤く再描画
+    if(this.boardBorder){
+      this.boardBorder.clear();
+      this.boardBorder.lineStyle(3,0xff3333,1.0);
+      this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+    }
     this._garbageFlashing=true;
-    setTimeout(()=>{if(this.boardBorder){this.boardBorder.tint=0xffffff;this._garbageFlashing=false;}},133);
+    this._borderNormal=false;
+    setTimeout(()=>{if(this.boardBorder){
+      this._garbageFlashing=false;
+      this._borderNormal=false; // force redraw next frame
+    }},133);
   }
 
   onGarbageIncoming(lines,fromId){
@@ -2359,11 +2471,25 @@ class GameRenderer{
     // シェイクはonGarbageRowAddedで行う
   }
 
-  // 自分のゲームオーバー: ミノ単位でバラバラに落下
+  // 自分のゲームオーバー: ミノ単位でバラバラに落下 + 枠も斜めに落下
   onGameOver(){
     SFX.gameover();
     const wrap=this.boardWrap;
     wrap.visible=false;
+    // 枠を独立したContainerとして斜め落下させる
+    const sc2=this._uiScale||1;
+    const frameGfx=new PIXI.Graphics();
+    frameGfx.lineStyle(3,0x00f5ff,0.9);
+    frameGfx.drawRect(-2,-ABOVE_BOARD*sc2,BOARD_W*sc2+4,BOARD_H*sc2+ABOVE_BOARD*sc2+4);
+    frameGfx.x=this.mainBX;
+    frameGfx.y=this.mainBY;
+    this.effectsLayer.addChild(frameGfx);
+    // ランダムに傾いて落下
+    const frameVX=(Math.random()>0.5?1:-1)*(1.5+Math.random()*2);
+    const frameVY=0;
+    const frameRot=0;
+    const frameRotSpeed=(Math.random()-0.5)*0.04;
+    this._fallingFrame={gfx:frameGfx,vx:frameVX,vy:frameVY,vy0:0,rot:frameRotSpeed,alpha:1,pivotX:this.mainBX+BOARD_W*sc2/2,pivotY:this.mainBY+BOARD_H*sc2/2};
 
     const gs=this.gs;
     const originX=this.mainBX;
@@ -2455,6 +2581,21 @@ class GameRenderer{
           p.cont.alpha=p.alpha;
         }
       }
+      // 枠の落下アニメ
+      if(this._fallingFrame&&this._fallingFrame.alpha>0){
+        const ff=this._fallingFrame;
+        ff.vy0+=0.4;
+        ff.gfx.x+=ff.vx;
+        ff.gfx.y+=ff.vy0;
+        ff.gfx.rotation+=ff.rot;
+        // ピボット中心で回転するようにtransformOriginを調整
+        const distB2=ff.gfx.y-(originY+BOARD_H+200);
+        if(distB2>0){
+          ff.alpha=Math.max(0,1-distB2/500);
+          ff.gfx.alpha=ff.alpha;
+        }
+        if(ff.alpha<=0){try{ff.gfx.destroy();}catch(e){}this._fallingFrame=null;}
+      }
     };
   }
 
@@ -2499,8 +2640,7 @@ class GameRenderer{
     const d=this.opBoardData[pid];if(!d||d.dead)return;
     const isTSpin=spinType&&spinType.startsWith('T');
     if(!isTSpin&&!spinType)return;
-    // 75% intensity: 0.08*0.75=0.06, 0.06*0.75=0.045
-    d.tiltTarget=isTSpin?0.06:-0.045;
+    d.tiltTarget=isTSpin?0.08:-0.06;
     d.shakeX=(Math.random()-0.5)*10;d.shakeY=(Math.random()-0.5)*5;
     setTimeout(()=>{if(d)d.tiltTarget=0;},400);
   }
@@ -2539,8 +2679,7 @@ class GameRenderer{
 
     // テトリス/スピン: 傾き
     if(count>=4||allClear||(spinType&&spinType!=='MINI_TSPIN')){
-      // 75% intensity: 0.06 * 0.75 = 0.045
-      d.tiltTarget=(spinType&&spinType.startsWith('T'))?0.045:-0.045;
+      d.tiltTarget=(spinType&&spinType.startsWith('T'))?0.06:-0.06;
       setTimeout(()=>{if(d)d.tiltTarget=0;},350);
     }
 
@@ -2581,24 +2720,35 @@ class GameRenderer{
   }
 
   updateBoardAnim(dt){
-    if(this.boardOffsetY>0){this.boardOffsetY*=0.72;if(this.boardOffsetY<0.3)this.boardOffsetY=0;}
+    if(this.boardOffsetY>0){this.boardOffsetY*=0.63;if(this.boardOffsetY<0.3)this.boardOffsetY=0;}
     // T-spin afterimage fade
     if(this._afterimageAlpha>0.01){
-      this._afterimageAlpha*=0.82;
-      this.afterimageGfx.alpha=this._afterimageAlpha;
+      if(this._afterimageLife!==undefined&&this._afterimageLife>0){
+        this._afterimageLife-=dt;
+        // Hold at full alpha for 300ms, then fade
+        if(this._afterimageLife>0){
+          this.afterimageGfx.alpha=this._afterimageAlpha;
+        } else {
+          this._afterimageAlpha*=0.78;
+          this.afterimageGfx.alpha=Math.max(0,this._afterimageAlpha);
+        }
+      } else {
+        this._afterimageAlpha*=0.78;
+        this.afterimageGfx.alpha=Math.max(0,this._afterimageAlpha);
+      }
       this._drawAfterimage();
       if(this._afterimageAlpha<=0.01){this._afterimageAlpha=0;this.afterimageGfx.clear();this.afterimageGfx.alpha=0;}
     }
-    this.tiltAngle+=(this.tiltTarget-this.tiltAngle)*0.14;
+    this.tiltAngle+=(this.tiltTarget-this.tiltAngle)*0.21;
     if(Math.abs(this.tiltAngle)<0.0005&&Math.abs(this.tiltTarget)<0.0005)this.tiltAngle=0;
     if(settings.tilt==='on')this.boardCont.rotation=this.tiltAngle;else this.boardCont.rotation=0;
     if(this.shakePower>0){
       this._shakeT=(this._shakeT||0)+0.9;
       this.boardOffsetX=Math.sin(this._shakeT*3.8)*this.shakePower;
-      this.shakePower*=0.60;
+      this.shakePower*=0.52;
       if(this.shakePower<0.15){this.shakePower=0;this.boardOffsetX=0;this._shakeT=0;}
     }
-    this.wallBumpX*=0.7;
+    this.wallBumpX*=0.55;
     if(Math.abs(this.wallBumpX)<0.2)this.wallBumpX=0;
 
     if(this._gameOverTick){
@@ -2647,20 +2797,30 @@ class GameRenderer{
     const dangerStart=HIDDEN+4;
     const danger=Math.max(0,Math.min(1,(dangerStart-topRow)/4)); // 0~1
 
-    // 枠の色を 赤 に固定 (danger > 0 のとき)
+    // 枠の色を danger に応じてシアン→赤に変化
     if(this.boardBorder&&!this._garbageFlashing){
       if(danger>0){
         const pulse=0.6+0.4*Math.abs(Math.sin(performance.now()*0.004));
-        // 常に赤色に
-        const borderCol=0xff0000;
-        this.boardBorder.tint=borderCol;
-        this.boardBorder.alpha=0.7+0.3*pulse;
+        // boardBorder は Graphics なので tint ではなく再描画で色変更
+        const r2=Math.min(255,Math.floor(0xff*danger));
+        const g2=Math.min(255,Math.floor(0xf5*(1-danger)));
+        const b2=Math.min(255,Math.floor(0xff*(1-danger*0.8)));
+        const borderCol=(r2<<16)|(g2<<8)|b2;
+        this.boardBorder.clear();
+        this.boardBorder.lineStyle(2+danger*2,borderCol,0.6+0.4*pulse);
+        this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+        this.boardBorder.alpha=1;
       } else {
-        // 煙が出ていない時は元のシアンに戻す
-        this.boardBorder.tint=0x00f5ff;
+        if(!this._borderNormal){
+          this._borderNormal=true;
+          this.boardBorder.clear();
+          this.boardBorder.lineStyle(2,0x00f5ff,0.8);
+          this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+        }
         this.boardBorder.alpha=1;
       }
     }
+    if(danger>0)this._borderNormal=false;
 
     if(danger<=0){
       // 煙パーティクルをフェードアウト
@@ -2676,35 +2836,24 @@ class GameRenderer{
       return;
     }
 
-    // 煙の生成レート: 危機度に応じて増加（以前より控えめに調整）
+    // 煙の生成レート: 危機度に応じて増加（量を抑制）
     this._smokeTick=(this._smokeTick||0)+dt;
-    const rate=Math.max(30,120-danger*85);
+    const rate=Math.max(80,220-danger*140);
     if(this._smokeTick>=rate){
       this._smokeTick=0;
-      // 量を調整（以前の2倍）
-      const n=settings.particles==='high'?Math.ceil(2+danger*4):Math.ceil(1+danger*2);
-      const sc=this._uiScale||1;
-      const bw=BOARD_W*sc;
-      const bh=BOARD_H*sc;
-
+      const n=settings.particles==='high'?Math.ceil(1+danger*2):1;
+      // 枠の4角から煙が出る
+      const sc2=this._uiScale||1;
+      const bx=this.mainBX, by=this.mainBY, bw=BOARD_W*sc2, bh2=BOARD_H*sc2;
+      const corners=[
+        [bx+Math.random()*20-10,        by+Math.random()*20-10],        // 左上
+        [bx+bw+Math.random()*20-10,     by+Math.random()*20-10],        // 右上
+        [bx+Math.random()*20-10,        by+bh2+Math.random()*20-10],    // 左下
+        [bx+bw+Math.random()*20-10,     by+bh2+Math.random()*20-10],    // 右下
+      ];
       for(let i=0;i<n;i++){
-        // 四隅からランダムに選択
-        const corner=Math.floor(Math.random()*4);
-        let sx,sy,svx,svy;
-        // スピードを1.3倍
-        const speed=(0.6+danger*1.2)*1.3;
-        
-        if(corner===0){ // Top-Left
-          sx=this.mainBX; sy=this.mainBY; svx=-speed; svy=-speed;
-        } else if(corner===1){ // Top-Right
-          sx=this.mainBX+bw; sy=this.mainBY; svx=speed; svy=-speed;
-        } else if(corner===2){ // Bottom-Left
-          sx=this.mainBX; sy=this.mainBY+bh; svx=-speed; svy=speed;
-        } else { // Bottom-Right
-          sx=this.mainBX+bw; sy=this.mainBY+bh; svx=speed; svy=speed;
-        }
-
-        this._spawnRealisticSmokePuff(sx, sy, danger, this.smokeLayer, this._smokeParticles, svx, svy);
+        const corner=corners[Math.floor(Math.random()*4)];
+        this._spawnNoiseSmokePuff(corner[0],corner[1],danger,this.smokeLayer,this._smokeParticles);
       }
     }
     // 既存煙を更新
@@ -2718,10 +2867,11 @@ class GameRenderer{
       else{alpha=p.maxAlpha*(lifeRatio/0.3);}
       p.gfx.alpha=Math.max(0,alpha);
       p.gfx.x+=p.vx;p.gfx.y+=p.vy;
-      // 乱流
+      // 乱流: ランダムな横揺れ
       p.vx+=(Math.random()-0.5)*0.06;
       p.vx*=0.98;
-      p.vy*=0.994;
+      // 上昇は徐々に遅くなる
+      p.vy*=0.992;
       // 拡大（膨張）
       p.gfx.scale.x*=p.expandX;p.gfx.scale.y*=p.expandY;
       p.gfx.rotation+=p.rot;
@@ -2729,50 +2879,66 @@ class GameRenderer{
     });
   }
 
-  // リアルな煙パフを1つスポーン
-  _spawnRealisticSmokePuff(sx, sy, danger, layer, list, baseVX=0, baseVY=0){
-    const layerCount=settings.particles==='high'?2:1;
+  // リアルな煙パフを1つスポーン（複数レイヤーで厚みを出す）
+  _spawnRealisticSmokePuff(sx, sy, danger, layer, list){
+    this._spawnNoiseSmokePuff(sx, sy, danger, layer, list);
+  }
+
+  // ノイズベースの煙パフ（吹き出す感じ）
+  _spawnNoiseSmokePuff(sx, sy, danger, layer, list){
+    const layerCount=1; // 量を抑制
     for(let L=0;L<layerCount;L++){
       const g=new PIXI.Graphics();
-      const baseR=(8+Math.random()*15)*(0.6+danger*0.7);
-      
-      // ユーザー要望の色: 灰、白、もっと赤い煙が出るように調整
+      const baseR=(6+Math.random()*12)*(0.5+danger*0.7);
+      // 黒煙に白・黄色の成分を混ぜた炎風の色
       let col;
-      const rnd=Math.random();
-      if(rnd<0.3) col=0xdddddd; // ほぼ白
-      else if(rnd<0.5) col=0x888888; // 灰色
-      else if(rnd<0.85) col=0x880000; // 少し明るめの赤
-      else col=0x330000; // 黒目の赤
-      
-      const baseAlpha=(0.12+danger*0.18)*(1-L*0.3);
+      const smoke_r=Math.random();
+      if(danger>0.75){
+        // 高危機: 黒煙 + 赤/橙/黄
+        col=smoke_r<0.35?0x111111:(smoke_r<0.55?0x333333:(smoke_r<0.7?0xff4400:(smoke_r<0.85?0xff8800:0xffcc00)));
+      } else if(danger>0.45){
+        // 中危機: 濃い灰 + 橙
+        col=smoke_r<0.4?0x1a1a1a:(smoke_r<0.65?0x444444:(smoke_r<0.82?0xcc5500:0xffaa00));
+      } else {
+        // 低危機: 黒〜濃灰 + 少し白
+        col=smoke_r<0.45?0x111111:(smoke_r<0.75?0x333333:(smoke_r<0.9?0x777777:0xcccccc));
+      }
+      const baseAlpha=(0.18+danger*0.25);
+      // ノイズ感を出すため複数の歪んだ楕円を重ねる
       g.beginFill(col,baseAlpha);
-      // ノイズベース: 小さな点を多数散布して粒子感を出す
-      const numDots=settings.particles==='high'?10:6;
-      for(let b=0;b<numDots;b++){
+      const numBlobs=2+Math.floor(Math.random()*2);
+      for(let b=0;b<numBlobs;b++){
         const ox=(Math.random()-0.5)*baseR*1.2;
-        const oy=(Math.random()-0.5)*baseR*1.2;
-        const dotR=1+Math.random()*baseR*0.25;
-        g.drawCircle(ox,oy,dotR);
+        const oy=(Math.random()-0.5)*baseR*0.8;
+        const rx=baseR*(0.5+Math.random()*0.9);
+        const ry=rx*(0.4+Math.random()*0.5);
+        g.drawEllipse(ox,oy,rx,ry);
       }
       g.endFill();
-
-      g.x=sx; g.y=sy;
+      // 少し明るい芯
+      g.beginFill(0xffffff,baseAlpha*0.3);
+      g.drawEllipse(0,0,baseR*0.25,baseR*0.15);
+      g.endFill();
+      g.x=sx+(Math.random()-0.5)*8;
+      g.y=sy+(Math.random()-0.5)*8;
       g.alpha=0;
       g.rotation=Math.random()*Math.PI*2;
       layer.addChild(g);
-
-      const maxLife=0.6+Math.random()*0.7;
+      // 吹き出す方向（コーナーから外側へ）、1.5倍速
+      const blowAngle=Math.atan2(sy-((this.mainBY||0)+(BOARD_H/2)), sx-((this.mainBX||0)+(BOARD_W/2)));
+      const blowStrength=(0.9+Math.random()*1.8+danger*1.2)*1.5;
+      const maxLife=0.8+Math.random()*0.6;
       list.push({
         gfx:g,
-        vx:baseVX+(Math.random()-0.5)*0.4,
-        vy:baseVY+(Math.random()-0.5)*0.4,
+        vx:Math.cos(blowAngle)*blowStrength+(Math.random()-0.5)*0.8,
+        vy:Math.sin(blowAngle)*blowStrength-(0.45+Math.random()*0.9),
         life:maxLife,
         maxLife:maxLife,
-        decay:(0.01+Math.random()*0.012),
-        maxAlpha:baseAlpha*(0.8+Math.random()*0.4),
-        expandX:1.006+Math.random()*0.006,
-        expandY:1.004+Math.random()*0.005,
-        rot:(Math.random()-0.5)*0.01,
+        decay:(0.010+Math.random()*0.009),
+        maxAlpha:baseAlpha,
+        expandX:1.010+Math.random()*0.008,
+        expandY:1.008+Math.random()*0.006,
+        rot:(Math.random()-0.5)*0.022,
       });
     }
   }
@@ -2927,18 +3093,6 @@ class GameRenderer{
     const dangerStart=offset+4;
     const danger=Math.max(0,Math.min(1,(dangerStart-topRow)/4));
 
-    // 枠の色を danger に応じて変更
-    if(d.bg){
-      if(danger>0){
-        d.bg.tint=0xff0000;
-        const pulse=0.7+0.3*Math.abs(Math.sin(performance.now()*0.004));
-        d.bg.alpha=pulse;
-      } else {
-        d.bg.tint=d.isBot?0xffbe0b:0x00f5ff;
-        d.bg.alpha=1;
-      }
-    }
-
     if(danger<=0){
       d.smokeParticles=d.smokeParticles.filter(p=>{
         p.life-=0.025;p.gfx.alpha=Math.max(0,p.life*p.maxAlpha);
@@ -2953,26 +3107,17 @@ class GameRenderer{
     d.smokeLayer.x=d.cont.x;d.smokeLayer.y=d.cont.y;
 
     d.smokeTick=(d.smokeTick||0)+dt;
-    const rate=Math.max(40,140-danger*100);
+    const rate=Math.max(120,280-danger*160);
     if(d.smokeTick>=rate){
       d.smokeTick=0;
-      // 量を調整（以前の2倍）
-      const n=settings.particles==='high'?Math.ceil(2+danger*2):1;
+      const n=1;
+      // 敵ボードの4角から煙
+      const corners2=[
+        [0,0],[d.boardW,0],[0,d.boardH],[d.boardW,d.boardH]
+      ];
       for(let i=0;i<n;i++){
-        const corner=Math.floor(Math.random()*4);
-        let sx,sy,svx,svy;
-        // スピードを1.3倍
-        const speed=(0.4+danger*0.8)*1.3;
-        if(corner===0){ // TL
-          sx=0; sy=0; svx=-speed; svy=-speed;
-        } else if(corner===1){ // TR
-          sx=d.boardW; sy=0; svx=speed; svy=-speed;
-        } else if(corner===2){ // BL
-          sx=0; sy=d.boardH; svx=-speed; svy=speed;
-        } else { // BR
-          sx=d.boardW; sy=d.boardH; svx=speed; svy=speed;
-        }
-        this._spawnRealisticSmokePuff(sx,sy,danger,d.smokeLayer,d.smokeParticles,svx,svy);
+        const corner2=corners2[Math.floor(Math.random()*4)];
+        this._spawnNoiseSmokePuff(corner2[0],corner2[1],danger,d.smokeLayer,d.smokeParticles);
       }
     }
     d.smokeParticles=d.smokeParticles.filter(p=>{
@@ -3095,8 +3240,8 @@ function handleKeyDown(e){
   if(keyState[e.code])return;
   keyState[e.code]=true;
   switch(e.code){
-    case 'ArrowLeft':gameState.move(-1);startDAS(-1);break;
-    case 'ArrowRight':gameState.move(1);startDAS(1);break;
+    case 'ArrowLeft':gameState.move(-1);_dasStartedAt=performance.now();startDAS(-1);break;
+    case 'ArrowRight':gameState.move(1);_dasStartedAt=performance.now();startDAS(1);break;
     case 'ArrowUp':case 'KeyX':gameState.rotate(1);break;
     case 'KeyZ':gameState.rotate(-1);break;
     case 'ArrowDown':startSoftDrop();break;
@@ -3113,15 +3258,22 @@ function handleKeyUp(e){
   if(e.code==='ArrowDown')stopSoftDrop();
 }
 function startDAS(dir){
-  if(gameState&&gameState._dcdActive) return;
   stopDAS();
   das=setTimeout(()=>{
-    arr=setInterval(()=>{
-      if(!gameState||!gameState.alive){stopDAS();return;}
-      gameState.move(dir);
-    },settings.arrInterval||20);
+    // DCD (DAS Cut Delay): スポーン直後のDAS誤爆防止
+    const dcdMs=settings.dcdDelay||0;
+    let dcdStart=_dasStartedAt||0;
+    const elapsed=performance.now()-dcdStart;
+    const dcdWait=Math.max(0,dcdMs-elapsed);
+    setTimeout(()=>{
+      arr=setInterval(()=>{
+        if(!gameState||!gameState.alive){stopDAS();return;}
+        gameState.move(dir);
+      },settings.arrInterval||20);
+    },dcdWait);
   },settings.dasDelay||133);
 }
+let _dasStartedAt=0;
 function stopDAS(){if(das){clearTimeout(das);das=null;}if(arr){clearInterval(arr);arr=null;}}
 function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;gameState.softDrop();softDropTimer=setInterval(()=>{if(!gameState||!gameState.alive){stopSoftDrop();return;}gameState.softDrop();},settings.softDropInterval||50);}
 function stopSoftDrop(){if(softDropTimer){clearInterval(softDropTimer);softDropTimer=null;}}
@@ -3229,6 +3381,87 @@ socket.on('game_end',({winner,winnerName,scores,forceEnded})=>{
 });
 
 let _autoReturnTimer=null;
+
+// ルームの非アクティブ警告
+let _roomInactivityTimer=null;
+let _roomInactivityWarningTimer=null;
+let _inactivityExtendBtn=null;
+
+function resetRoomInactivityTimer(){
+  if(!roomId)return;
+  if(!isHost)return; // ホストのみ
+  // 待機室画面のみ動作
+  if(document.getElementById('waiting').classList.contains('active')){
+    _startInactivityTimer();
+  }
+}
+
+function _startInactivityTimer(){
+  if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);
+  if(_roomInactivityWarningTimer)clearTimeout(_roomInactivityWarningTimer);
+  _removeInactivityBtn();
+  // 1分後に警告
+  _roomInactivityTimer=setTimeout(()=>{
+    _showInactivityWarning();
+  },60000);
+}
+
+function _showInactivityWarning(){
+  if(!roomId||!isHost)return;
+  // 警告ボタン表示
+  _removeInactivityBtn();
+  const btn=document.createElement('div');
+  btn.id='inactivity-warning-btn';
+  btn.style.cssText='position:fixed;bottom:80px;left:50%;transform:translateX(-50%);z-index:9000;background:rgba(255,0,110,0.92);border:2px solid #ff006e;border-radius:12px;padding:1rem 2rem;font-family:Orbitron,sans-serif;color:#fff;text-align:center;cursor:pointer;box-shadow:0 0 30px rgba(255,0,110,0.5);animation:pulse-warn 0.8s ease-in-out infinite alternate;';
+  btn.innerHTML='<div style="font-size:0.9rem;letter-spacing:0.1em;margin-bottom:0.4rem;">⚠ ルームが非アクティブです</div><div style="font-size:0.75rem;opacity:0.8;margin-bottom:0.6rem;">10秒以内に押さないとルームが削除されます</div><button style="background:rgba(255,255,255,0.2);border:1px solid #fff;color:#fff;font-family:Orbitron;font-size:0.75rem;padding:0.4rem 1.2rem;border-radius:6px;cursor:pointer;letter-spacing:0.05em;">延長する (+1分)</button>';
+  _inactivityExtendBtn=btn;
+  document.body.appendChild(btn);
+  btn.querySelector('button').addEventListener('click',_extendRoomTime);
+  // 10秒のカウントダウン
+  let remaining=10;
+  const countEl=document.createElement('div');
+  countEl.style.cssText='font-size:2rem;font-weight:900;margin-top:0.3rem;color:#ffbe0b;';
+  countEl.textContent=remaining;
+  btn.appendChild(countEl);
+  _roomInactivityWarningTimer=setInterval(()=>{
+    remaining--;
+    if(countEl)countEl.textContent=remaining;
+    if(remaining<=0){
+      clearInterval(_roomInactivityWarningTimer);
+      _deleteRoomDueToInactivity();
+    }
+  },1000);
+  // スタイル追加
+  if(!document.getElementById('inactivity-style')){
+    const st=document.createElement('style');
+    st.id='inactivity-style';
+    st.textContent='@keyframes pulse-warn{from{box-shadow:0 0 20px rgba(255,0,110,0.4);}to{box-shadow:0 0 40px rgba(255,0,110,0.9);}}';
+    document.head.appendChild(st);
+  }
+}
+
+function _extendRoomTime(){
+  _removeInactivityBtn();
+  _startInactivityTimer();
+}
+
+function _removeInactivityBtn(){
+  if(_inactivityExtendBtn){_inactivityExtendBtn.remove();_inactivityExtendBtn=null;}
+  if(_roomInactivityWarningTimer){clearInterval(_roomInactivityWarningTimer);_roomInactivityWarningTimer=null;}
+  const b=document.getElementById('inactivity-warning-btn');
+  if(b)b.remove();
+}
+
+function _deleteRoomDueToInactivity(){
+  _removeInactivityBtn();
+  if(roomId){
+    socket.emit('leave_room');
+    addChatSystem('⚠ ルームが非アクティブのため削除されました。');
+  }
+  roomId=null;roomPlayers=[];
+  if(myName)showGameLobby(null);
+  else showScreen('lobby');
+}
 
 
 
@@ -3338,7 +3571,6 @@ function showDpad(visible) {
 
 // Called on pointer-down for DAS keys (left/right/down)
 function _dpadStartDAS(key, action, repeatMs) {
-  if(gameState&&gameState._dcdActive) return;
   _dpadStopKey(key);
   action(); // immediate first fire
   _dpadDasTimers[key] = {};
@@ -3867,10 +4099,8 @@ document.addEventListener('DOMContentLoaded',()=>{
   if(arrIntV)arrIntV.textContent=(settings.arrInterval||20)+'ms';
   const dcdDel=document.getElementById('dcd-delay-input');
   const dcdDelV=document.getElementById('dcd-delay-val');
-  if(dcdDel){
-    dcdDel.value=settings.dcdDelay||0;
-    if(dcdDelV) dcdDelV.textContent=(settings.dcdDelay||0)+'ms';
-  }
+  if(dcdDel)dcdDel.value=settings.dcdDelay||0;
+  if(dcdDelV)dcdDelV.textContent=(settings.dcdDelay||0)+'ms';
   sfxVol=settings.sfxVolume/100;
   document.getElementById('chat-input').addEventListener('keydown',e=>{if(e.key==='Enter')sendChat();});
   document.getElementById('gl-join-id-input').addEventListener('keydown',e=>{if(e.key==='Enter')glJoinRoom();});
