@@ -982,12 +982,14 @@ class BotPlayer {
     }
 
     if (room) {
+      const garbageLines=this.garbageQueue?this.garbageQueue.reduce((s,g)=>s+g.lines,0):0;
       io.to(this.roomId).emit('bot_update', {
         id: this.id,
         board: this.board.map(r=>r.map(c=>c||0)),
         score: this.score, lines: this.lines, level: this.lvl,
         nextPieces: this.nextQueue.slice(0,5),
-        holdPiece: this.holdPiece
+        holdPiece: this.holdPiece,
+        garbageLines
       });
     }
 
@@ -1262,7 +1264,9 @@ io.on('connection', (socket) => {
     const player=room.players.find(p=>p.id===socket.id); if (!player) return;
     player.board=board; player.score=score; player.lines=lines; player.level=level;
     player.currentPiece=currentPiece; player.nextPieces=nextPieces; player.holdPiece=holdPiece;
-    socket.to(socket.roomId).emit('opponent_update',{id:socket.id,board,score,lines,level,currentPiece,nextPieces,holdPiece});
+    const player2=room.players.find(p=>p.id===socket.id);
+    const garbageLines=player2&&player2.garbageQueue?player2.garbageQueue.reduce((s,g)=>s+g.lines,0):0;
+    socket.to(socket.roomId).emit('opponent_update',{id:socket.id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines});
   });
 
   // ── Training data: piece placement event ──────────────────────

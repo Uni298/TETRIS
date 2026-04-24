@@ -1449,13 +1449,15 @@ class GameRenderer{
       const lightGfx=new PIXI.Graphics();lightGfx.alpha=0;cont.addChild(lightGfx);
       // 煙レイヤー（cont の外に出るため root に追加）
       const opSmokeLayer=new PIXI.Container();this.root.addChild(opSmokeLayer);
+      // ゴミゲージ (ボード左側に縦棒)
+      const gMeterGfx=new PIXI.Graphics();gMeterGfx.x=-8;gMeterGfx.y=0;cont.addChild(gMeterGfx);
       this.opBoardData[p.id]={
         cont,boardGfx,scoreTxt:stxt,nextGfx,holdGfx,cell:oCell,origX:RX,origY:by,
         board:null,currentPiece:null,nextPieces:null,holdPiece:null,
         shakeX:0,shakeY:0,tilt:0,tiltTarget:0,dead:false,
         boardW:oBW,boardH:oBH,showAbove,isBot,
         gameOverTick:null,origXcenter:RX+oBW/2,origYcenter:by+oBH/2,
-        score:0,
+        score:0,garbageLines:0,gMeterGfx,
         flashGfx,flashAlpha:0,
         renGfx,lightGfx,b2bCount:0,lightTimer:0,
         ren:0,renColor:0x00f5ff,
@@ -1780,6 +1782,29 @@ class GameRenderer{
       setTimeout(()=>{this.wallBumpX*=-0.6;},60);
     }
     this._prevReadyCount=readyCount;
+  }
+
+  // 相手・BotのゴミゲージをボードLeftに描画
+  drawOpponentGarbageMeter(pid){
+    const d=this.opBoardData[pid];
+    if(!d||!d.gMeterGfx)return;
+    const g=d.gMeterGfx;g.clear();
+    const lines=d.garbageLines||0;
+    const bh=d.boardH;
+    if(lines<=0)return;
+    // 背景
+    g.beginFill(0x111122,0.5);g.drawRect(0,0,6,bh);g.endFill();
+    // ゲージ高さ (最大20行分でbh全体)
+    const h=Math.min(lines/20,1)*bh;
+    const y=bh-h;
+    // 行数に応じた色
+    const col=lines>=8?0xff006e:lines>=4?0xff8500:0xffbe0b;
+    g.beginFill(col,0.85);g.drawRect(0,y,6,h);g.endFill();
+    // 点滅枠 (2行以上でレディ状態を示す)
+    if(lines>=2){
+      const pulse=0.4+0.6*Math.abs(Math.sin(performance.now()*0.006));
+      g.lineStyle(1,col,pulse);g.drawRect(0,y,6,h);g.lineStyle(0);
+    }
   }
 
   updateScoreUI(){
@@ -2445,6 +2470,29 @@ class GameRenderer{
   // 自分のゲームオーバー: ミノ単位でバラバラに落下 + 枠も斜めに落下
   onGameOver(){
     SFX.gameover();
+    // ── Phase 1: 横揺れ 300ms ──
+    const wrap=this.boardWrap;
+    const shakeStartTime=performance.now();
+    const shakeDuration=300;
+    const origWrapX=wrap.x;
+    const shakeAmp=9;
+    this._gameOverShaking=true;
+    const doShake=()=>{
+      if(!this._gameOverShaking)return;
+      const elapsed=performance.now()-shakeStartTime;
+      if(elapsed<shakeDuration){
+        wrap.x=origWrapX+Math.sin(elapsed*0.08*Math.PI*2)*shakeAmp*(1-elapsed/shakeDuration*0.5);
+        requestAnimationFrame(doShake);
+      } else {
+        wrap.x=origWrapX;
+        this._gameOverShaking=false;
+        this._startGameOverCollapse();
+      }
+    };
+    requestAnimationFrame(doShake);
+  }
+
+  _startGameOverCollapse(){
     const wrap=this.boardWrap;
     wrap.visible=false;
     // 枠を独立したContainerとして斜め落下させる
@@ -3043,7 +3091,7 @@ class GameRenderer{
     this.drawNextPieces();this.drawHold();
     this.updateScoreUI();
     this.updateBoardAnim(dt);
-    this.opponentPlayers.forEach(p=>{this.drawOpponentBoard(p.id);this._updateOpponentSmoke(p.id,dt);});
+    this.opponentPlayers.forEach(p=>{this.drawOpponentBoard(p.id);this._updateOpponentSmoke(p.id,dt);this.drawOpponentGarbageMeter(p.id);});
     this.drawGarbageMeter();
     this.updateParticlesEtc(dt);
     // ULTRA: animated scanline
@@ -3262,7 +3310,7 @@ function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;g
 function stopSoftDrop(){if(softDropTimer){clearInterval(softDropTimer);softDropTimer=null;}}
 
 // ---- Multiplayer ----
-socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces,holdPiece})=>{
+socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines})=>{
   if(!renderer)return;
   const d=renderer.opBoardData[id];if(!d)return;
   d.board=board;
@@ -3270,7 +3318,9 @@ socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces
   if(nextPieces)d.nextPieces=nextPieces;
   if(holdPiece!==undefined)d.holdPiece=holdPiece;
   if(score!==undefined)d.score=score;
+  if(garbageLines!==undefined)d.garbageLines=garbageLines;
   if(d.scoreTxt)d.scoreTxt.text=(score||0).toString().padStart(7,'0');
+  renderer.drawOpponentGarbageMeter&&renderer.drawOpponentGarbageMeter(id);
   if(isSpectator)return; // SpectatorRenderer は ticker で自動更新
   const p=renderer.players.find(pl=>pl.id===id);
   if(p){p.score=score;p.lines=lines;p.level=level;}
@@ -3278,14 +3328,16 @@ socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces
 });
 
 // BOT board update (same structure as opponent_update)
-socket.on('bot_update',({id,board,score,lines,level,nextPieces,holdPiece})=>{
+socket.on('bot_update',({id,board,score,lines,level,nextPieces,holdPiece,garbageLines})=>{
   if(!renderer)return;
   const d=renderer.opBoardData[id];if(!d)return;
   d.board=board;
   if(nextPieces)d.nextPieces=nextPieces;
   if(holdPiece!==undefined)d.holdPiece=holdPiece;
   if(score!==undefined)d.score=score;
+  if(garbageLines!==undefined)d.garbageLines=garbageLines;
   if(d.scoreTxt)d.scoreTxt.text=(score||0).toString().padStart(7,'0');
+  renderer.drawOpponentGarbageMeter&&renderer.drawOpponentGarbageMeter(id);
   if(isSpectator)return;
   renderer.updateVisibleOpponents&&renderer.updateVisibleOpponents();
 });
