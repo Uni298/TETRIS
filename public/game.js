@@ -841,8 +841,8 @@ function rotateMatrix(matrix, dir) {
 // ---- Game State ----
 let gameState=null,gameApp=null,renderer=null;
 
-// ミノのスポーン位置: 枠の外の上から登場させる（1マス上）
-const SPAWN_Y = -3;
+// ミノのスポーン位置: 枠上部より1マス上にスポーン
+const SPAWN_Y = HIDDEN - 2; // board[HIDDEN-2] = 枠上部の2マス上
 
 class TetrisGame{
   constructor(bagSeed){
@@ -876,34 +876,8 @@ class TetrisGame{
     this.current={type,rotation:0,x:3,y:SPAWN_Y,customShape};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
     if(renderer)renderer._wallBumpActive=false;
-    // Game over: スポーンしたミノが盤面の既存ブロックと重なったらゲームオーバー
-    // SPAWN_Y=-3, HIDDEN=3 なのでミノは board[-3..0] 付近にスポーン
-    // ny が負の場合は配列外だが、isValid で使う board インデックスは ny+HIDDEN_OFFSET になる
-    // ここでは isValid を直接使って重なりをチェック
-    const spawnShape=this.getShape(this.current.type,0,this.current.customShape||null);
-    let overlaps=false;
-    outer2: for(let r=0;r<spawnShape.length;r++){
-      for(let c=0;c<spawnShape[r].length;c++){
-        if(!spawnShape[r][c])continue;
-        const ny=this.current.y+r,nx=this.current.x+c;
-        // ny が 0以上 = 盤面内（board[ny][nx]をチェック）
-        // ny が 負 = 盤面上部の隠れ行。HIDDEN offsetを加えた絶対行でチェック
-        // ただし SPAWN_Y=-3, HIDDEN=3 なのでスポーン直後のrは0なので
-        // ny = -3 + 0 = -3 → 盤面外なのでチェック不要
-        // ny = -3 + 1 = -2 → 盤面外
-        // ny = -3 + 2 = -1 → 盤面外  
-        // ny = -3 + 3 = 0 → board[0]（HIDDEN行の最初）= チェック必要
-        // つまり積み上がってHIDDEN行内にブロックがあれば当たる
-        if(ny>=0&&ny<ROWS+HIDDEN&&nx>=0&&nx<COLS&&this.board[ny][nx]){overlaps=true;break outer2;}
-      }
-    }
-    if(overlaps){this.alive=false;}
-    // 追加チェック: ミノの最下行がスポーンのy+形状の高さに来た時、
-    // 可視領域の一番上(HIDDEN行目)に既存ブロックがあればゲームオーバー
-    if(!overlaps){
-      // isValid でスポーン位置が無効 = 即ゲームオーバー
-      if(!this.isValid(this.current)){this.alive=false;}
-    }
+    // ゲームオーバー: スポーン位置が既存ブロックと重なったら
+    if(!this.isValid(this.current)){this.alive=false;}
   }
 
   getShape(type,rot,customShape){
@@ -931,13 +905,16 @@ class TetrisGame{
   rotate(dir){
     const oldRot=this.current.rotation;
     const newRot=((oldRot+(dir>0?1:3))%4+4)%4;
+    // スピン前の状態を保存（残像用）
+    const prePiece={...this.current};
+    const preShape=this._getShapeForPiece(this.current).map(r=>[...r]);
     // For custom-shaped pieces, rotate the shape matrix itself
     if(this.current.customShape){
       const rotated=rotateMatrix(this.current.customShape,dir>0?1:-1);
       const base={...this.current,rotation:newRot,customShape:rotated};
       if(this.isValid(base)){
         this.current=base;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
-        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
       // Try simple kicks for custom pieces
@@ -945,7 +922,7 @@ class TetrisGame{
         const t={...base,x:base.x+kx,y:base.y-ky};
         if(this.isValid(t)){
           this.current=t;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
-          if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+          if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
           return true;
         }
       }
@@ -956,14 +933,14 @@ class TetrisGame{
     const base={...this.current,rotation:newRot};
     if(this.isValid(base)){
       this.current=base;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
-      if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+      if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
       return true;
     }
     if(kicks)for(const[kx,ky]of kicks){
       const t={...base,x:base.x+kx,y:base.y-ky};
       if(this.isValid(t)){
         this.current=t;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
-        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
     }
@@ -1032,10 +1009,7 @@ class TetrisGame{
     const wasSpin=!!this.lastSpin,spinType=this.lastSpinType;
     this._lockX=this.current.x;this._lockY=this.current.y;this._lockType=this.current.type;
     this._lockRot=this.current.rotation||0;
-    // T-spin afterimage: capture shape+position BEFORE locking
-    if(wasSpin&&this.current.type==='T'){
-      renderer&&renderer.triggerAfterimage(this.current,this._getShapeForPiece(this.current));
-    }
+    // T-spin afterimage: スピン回転時に既にトリガー済みのため、ここでは不要
     // Snapshot board state BEFORE placement for training data
     this._boardBefore=roomSettings.recordTraining?this.board.map(r=>r.map(c=>c||0)):null;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
@@ -1278,6 +1252,8 @@ class TetrisGame{
       this.current={type:nextType,rotation:0,x:3,y:SPAWN_Y,customShape:nextCustomShape};
       this.lastSpin=null;this.lastSpinType=null;this.locking=false;
       if(renderer)renderer._wallBumpActive=false;
+      // ゲームオーバー: ホールド後スポーン位置が既存ブロックと重なったら
+      if(!this.isValid(this.current)){this.alive=false;socket.emit("game_over");renderer&&renderer.onGameOver();}
     }else{
       this.holdPiece=type;
       this.holdCustomShape=customShape;
@@ -1313,7 +1289,7 @@ function groupByBatch(items){
 
 // ---- PixiJS Renderer ----
 const CELL=28,BOARD_W=COLS*CELL,BOARD_H=ROWS*CELL;
-const ABOVE_BOARD=CELL*2;
+const ABOVE_BOARD=CELL*2; // 枠は可視エリア上2マス分
 
 function initGame(players,bagSeed){
   setupInput();
@@ -1407,7 +1383,7 @@ class GameRenderer{
     // スケールはボードの中心を保ちながらオフセット計算に反映
     this._uiScale=sc;
     this.mainBX=this.W/2-BOARD_W*sc/2-30;
-    this.mainBY=(this.H-(BOARD_H*sc+ABOVE_BOARD*sc))/2+ABOVE_BOARD*sc+offY;
+    this.mainBY=(this.H-BOARD_H*sc)/2+offY;
   }
 
   createBg(){
@@ -1530,9 +1506,7 @@ class GameRenderer{
     this.boardCont.pivot.set(BOARD_W/2,BOARD_H/2);
     this.boardWrap.addChild(this.boardCont);
     const aboveBg=new PIXI.Graphics();
-    // 上部エリアは透明（ミノが隠れないようにbgなし）
-    aboveBg.lineStyle(0.4,0x001133,0.08);
-    for(let c=0;c<=COLS;c++){aboveBg.moveTo(c*CELL,-ABOVE_BOARD);aboveBg.lineTo(c*CELL,0);}
+    // 上部エリアは枠外なので背景・グリッドなし
     this.boardCont.addChild(aboveBg);
     const bg=new PIXI.Graphics();
     bg.beginFill(0x000010,0.95);bg.drawRect(0,0,BOARD_W,BOARD_H);bg.endFill();
@@ -1543,7 +1517,7 @@ class GameRenderer{
     this.boardCont.addChild(bg);
     this.boardBorder=new PIXI.Graphics();
     this.boardBorder.lineStyle(2,0x00f5ff,0.8);
-    this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+    this.boardBorder.drawRect(-2,0,BOARD_W+4,BOARD_H+4);
     this.boardCont.addChild(this.boardBorder);
     this.boardGfx=new PIXI.Graphics();this.boardCont.addChild(this.boardGfx);
     this.ghostGfx=new PIXI.Graphics();this.boardCont.addChild(this.ghostGfx);
@@ -2000,8 +1974,8 @@ class GameRenderer{
     if(settings.shake==='on')this.shakePower=Math.min(16,count*3+(spinType?5:0)+(allClear?12:0));
     if(count>=4||allClear)this.boardOffsetY=Math.max(this.boardOffsetY,24);
     else if(count>=2)this.boardOffsetY=Math.max(this.boardOffsetY,10);
-    if(settings.tilt==='on'&&spinType&&spinType!=='MINI_TSPIN'){
-      this.tiltTarget=spinType.startsWith('T')?0.0525:-0.0525;
+    if(settings.tilt==='on'&&spinType==='TSPIN'){
+      this.tiltTarget=0.0525;
       setTimeout(()=>{this.tiltTarget=0;},292);
     }
     if(settings.particles!=='off'&&settings.quality!=='minimum'){
@@ -2014,10 +1988,7 @@ class GameRenderer{
         }
         for(let i=0;i<25;i++)this.spawnParticle(this.mainBX+BOARD_W/2,this.mainBY+dr*CELL+CELL/2,0xffffff,false,true);
       });
-      // テトリス（4ライン消し）: 枠から破片が飛び出す演出
-      if(count>=4&&settings.particles!=='off'){
-        this._spawnBorderBreakEffect(count);
-      }
+      // テトリス（4ライン消し）: 枠から破片が飛び出す演出（無効化済み）
       // T-SPIN DOUBLE: 2つの塊エフェクト
       if(isTDouble&&settings.particles!=='off')this._spawnTSpinChunks(cleared,2,0xcc44ff);
       // T-SPIN TRIPLE: 3つの塊エフェクト
@@ -2149,7 +2120,7 @@ class GameRenderer{
       if(this.boardBorder){
         this.boardBorder.clear();
         this.boardBorder.lineStyle(3,renColor,0.95);
-        this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+        this.boardBorder.drawRect(-2,0,BOARD_W+4,BOARD_H+4);
         this._borderNormal=false;
         setTimeout(()=>{if(this.boardBorder){this._borderNormal=false;}},150);
       }
@@ -2390,17 +2361,17 @@ class GameRenderer{
       const lw=1+Math.min(b2b*0.4,2.5);
       g.lineStyle(lw,lCol,0.9);
       // 上辺
-      this._drawZigzag(g,0,-ABOVE_BOARD,bw,-ABOVE_BOARD,segs,amp,'h');
+      this._drawZigzag(g,0,0,bw,0,segs,amp,'h');
       // 下辺
       this._drawZigzag(g,0,bh,bw,bh,segs,amp,'h');
       // 左辺
-      this._drawZigzag(g,0,-ABOVE_BOARD,0,bh,segs,amp,'v');
+      this._drawZigzag(g,0,0,0,bh,segs,amp,'v');
       // 右辺
-      this._drawZigzag(g,bw,-ABOVE_BOARD,bw,bh,segs,amp,'v');
+      this._drawZigzag(g,bw,0,bw,bh,segs,amp,'v');
       // B2B 5以上: 追加の内側フラッシュ
       if(b2b>=5){
         g.lineStyle(lw*0.6,0xffffff,0.4*Math.random());
-        this._drawZigzag(g,4,-ABOVE_BOARD+4,bw-4,-ABOVE_BOARD+4,segs,amp*0.5,'h');
+        this._drawZigzag(g,4,4,bw-4,4,segs,amp*0.5,'h');
       }
     } else {
       if(this.lightningGfx.alpha>0){
@@ -2436,7 +2407,7 @@ class GameRenderer{
     if(this.boardBorder){
       this.boardBorder.clear();
       this.boardBorder.lineStyle(3,0xff3333,1.0);
-      this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+      this.boardBorder.drawRect(-2,0,BOARD_W+4,BOARD_H+4);
     }
     this._garbageFlashing=true;
     this._borderNormal=false;
@@ -2480,7 +2451,7 @@ class GameRenderer{
     const sc2=this._uiScale||1;
     const frameGfx=new PIXI.Graphics();
     frameGfx.lineStyle(3,0x00f5ff,0.9);
-    frameGfx.drawRect(-2,-ABOVE_BOARD*sc2,BOARD_W*sc2+4,BOARD_H*sc2+ABOVE_BOARD*sc2+4);
+    frameGfx.drawRect(-2,0,BOARD_W*sc2+4,BOARD_H*sc2+4);
     frameGfx.x=this.mainBX;
     frameGfx.y=this.mainBY;
     this.effectsLayer.addChild(frameGfx);
@@ -2808,14 +2779,14 @@ class GameRenderer{
         const borderCol=(r2<<16)|(g2<<8)|b2;
         this.boardBorder.clear();
         this.boardBorder.lineStyle(2+danger*2,borderCol,0.6+0.4*pulse);
-        this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+        this.boardBorder.drawRect(-2,0,BOARD_W+4,BOARD_H+4);
         this.boardBorder.alpha=1;
       } else {
         if(!this._borderNormal){
           this._borderNormal=true;
           this.boardBorder.clear();
           this.boardBorder.lineStyle(2,0x00f5ff,0.8);
-          this.boardBorder.drawRect(-2,-ABOVE_BOARD,BOARD_W+4,BOARD_H+ABOVE_BOARD+4);
+          this.boardBorder.drawRect(-2,0,BOARD_W+4,BOARD_H+4);
         }
         this.boardBorder.alpha=1;
       }
@@ -2836,25 +2807,23 @@ class GameRenderer{
       return;
     }
 
-    // 煙の生成レート: 危機度に応じて増加（量を抑制）
+    // 煙の生成レート: 危機度に応じて増加（量を厳しく抑制）
     this._smokeTick=(this._smokeTick||0)+dt;
-    const rate=Math.max(80,220-danger*140);
+    const rate=Math.max(180,400-danger*220);
     if(this._smokeTick>=rate){
       this._smokeTick=0;
-      const n=settings.particles==='high'?Math.ceil(1+danger*2):1;
-      // 枠の4角から煙が出る
       const sc2=this._uiScale||1;
       const bx=this.mainBX, by=this.mainBY, bw=BOARD_W*sc2, bh2=BOARD_H*sc2;
-      const corners=[
-        [bx+Math.random()*20-10,        by+Math.random()*20-10],        // 左上
-        [bx+bw+Math.random()*20-10,     by+Math.random()*20-10],        // 右上
-        [bx+Math.random()*20-10,        by+bh2+Math.random()*20-10],    // 左下
-        [bx+bw+Math.random()*20-10,     by+bh2+Math.random()*20-10],    // 右下
+      // 4辺の中点から外向きに噴き出す
+      const sides=[
+        {x:bx+bw/2, y:by,      dx:0,  dy:-1}, // 上辺→上
+        {x:bx+bw/2, y:by+bh2,  dx:0,  dy:1},  // 下辺→下
+        {x:bx,      y:by+bh2/2,dx:-1, dy:0},  // 左辺→左
+        {x:bx+bw,   y:by+bh2/2,dx:1,  dy:0},  // 右辺→右
       ];
-      for(let i=0;i<n;i++){
-        const corner=corners[Math.floor(Math.random()*4)];
-        this._spawnNoiseSmokePuff(corner[0],corner[1],danger,this.smokeLayer,this._smokeParticles);
-      }
+      // 1回に1辺だけスポーン（軽量化）
+      const side=sides[Math.floor(Math.random()*4)];
+      this._spawnNoiseSmokePuff(side.x,side.y,side.dx,side.dy,danger,this.smokeLayer,this._smokeParticles);
     }
     // 既存煙を更新
     this._smokeParticles=this._smokeParticles.filter(p=>{
@@ -2866,12 +2835,18 @@ class GameRenderer{
       else if(lifeRatio>0.3){alpha=p.maxAlpha;}
       else{alpha=p.maxAlpha*(lifeRatio/0.3);}
       p.gfx.alpha=Math.max(0,alpha);
+      // ノイズベースの乱流（sin波を複数重ねてPerlin風に近似）
+      if(p.noisePhase!==undefined){
+        p.noisePhase+=p.noiseFreq;
+        const turbX=Math.sin(p.noisePhase)*p.noiseAmp + Math.sin(p.noisePhase*2.3+1.2)*p.noiseAmp*0.5;
+        p.vx+=turbX;
+      } else {
+        p.vx+=(Math.random()-0.5)*0.06;
+      }
+      p.vx*=0.97;
       p.gfx.x+=p.vx;p.gfx.y+=p.vy;
-      // 乱流: ランダムな横揺れ
-      p.vx+=(Math.random()-0.5)*0.06;
-      p.vx*=0.98;
       // 上昇は徐々に遅くなる
-      p.vy*=0.992;
+      p.vy*=0.988;
       // 拡大（膨張）
       p.gfx.scale.x*=p.expandX;p.gfx.scale.y*=p.expandY;
       p.gfx.rotation+=p.rot;
@@ -2879,66 +2854,72 @@ class GameRenderer{
     });
   }
 
-  // リアルな煙パフを1つスポーン（複数レイヤーで厚みを出す）
-  _spawnRealisticSmokePuff(sx, sy, danger, layer, list){
-    this._spawnNoiseSmokePuff(sx, sy, danger, layer, list);
+  // リアルな煙パフを1つスポーン
+  _spawnRealisticSmokePuff(sx, sy, dx, dy, danger, layer, list){
+    this._spawnNoiseSmokePuff(sx, sy, dx||0, dy||0, danger, layer, list);
   }
 
-  // ノイズベースの煙パフ（吹き出す感じ）
-  _spawnNoiseSmokePuff(sx, sy, danger, layer, list){
-    const layerCount=1; // 量を抑制
-    for(let L=0;L<layerCount;L++){
+  // ノイズベースの煙パフ（辺から外向きに噴き出す）
+  _spawnNoiseSmokePuff(sx, sy, dx, dy, danger, layer, list){
+    // 1パフ = 2レイヤー（軽量）
+    const numLayers = settings.particles==='high' ? 2 : 1;
+    const blowAngle = Math.atan2(dy, dx) + (Math.random()-0.5)*0.5;
+    const blowStrength = 0.8+Math.random()*1.2+danger*0.8;
+    const maxLife = 0.7+Math.random()*0.5;
+
+    for(let L=0;L<numLayers;L++){
       const g=new PIXI.Graphics();
-      const baseR=(6+Math.random()*12)*(0.5+danger*0.7);
-      // 黒煙に白・黄色の成分を混ぜた炎風の色
-      let col;
-      const smoke_r=Math.random();
+      const baseR=(5+Math.random()*7)*(0.5+danger*0.6); // 小さく
+
+      let col, alpha;
+      const t=Math.random();
       if(danger>0.75){
-        // 高危機: 黒煙 + 赤/橙/黄
-        col=smoke_r<0.35?0x111111:(smoke_r<0.55?0x333333:(smoke_r<0.7?0xff4400:(smoke_r<0.85?0xff8800:0xffcc00)));
+        col=t<0.5?0xcc3300:(t<0.8?0xff6600:0xff9900);
+        alpha=0.4+danger*0.2;
       } else if(danger>0.45){
-        // 中危機: 濃い灰 + 橙
-        col=smoke_r<0.4?0x1a1a1a:(smoke_r<0.65?0x444444:(smoke_r<0.82?0xcc5500:0xffaa00));
+        col=t<0.5?0x666666:(t<0.8?0x999999:0xdd6600);
+        alpha=0.3+danger*0.15;
       } else {
-        // 低危機: 黒〜濃灰 + 少し白
-        col=smoke_r<0.45?0x111111:(smoke_r<0.75?0x333333:(smoke_r<0.9?0x777777:0xcccccc));
+        col=t<0.5?0x999999:(t<0.8?0xbbbbbb:0xdddddd);
+        alpha=0.22+danger*0.1;
       }
-      const baseAlpha=(0.18+danger*0.25);
-      // ノイズ感を出すため複数の歪んだ楕円を重ねる
-      g.beginFill(col,baseAlpha);
+
+      // 2〜3個の楕円ブロブでもこもこ感
       const numBlobs=2+Math.floor(Math.random()*2);
       for(let b=0;b<numBlobs;b++){
+        g.beginFill(col, alpha*(0.5+Math.random()*0.5));
         const ox=(Math.random()-0.5)*baseR*1.2;
         const oy=(Math.random()-0.5)*baseR*0.8;
-        const rx=baseR*(0.5+Math.random()*0.9);
+        const rx=baseR*(0.4+Math.random()*0.7);
         const ry=rx*(0.4+Math.random()*0.5);
         g.drawEllipse(ox,oy,rx,ry);
+        g.endFill();
       }
+      // 薄い芯
+      g.beginFill(0xffffff, alpha*0.15);
+      g.drawEllipse(0,0,baseR*0.3,baseR*0.2);
       g.endFill();
-      // 少し明るい芯
-      g.beginFill(0xffffff,baseAlpha*0.3);
-      g.drawEllipse(0,0,baseR*0.25,baseR*0.15);
-      g.endFill();
-      g.x=sx+(Math.random()-0.5)*8;
-      g.y=sy+(Math.random()-0.5)*8;
+
+      g.x=sx+(Math.random()-0.5)*6;
+      g.y=sy+(Math.random()-0.5)*6;
       g.alpha=0;
       g.rotation=Math.random()*Math.PI*2;
       layer.addChild(g);
-      // 吹き出す方向（コーナーから外側へ）、1.5倍速
-      const blowAngle=Math.atan2(sy-((this.mainBY||0)+(BOARD_H/2)), sx-((this.mainBX||0)+(BOARD_W/2)));
-      const blowStrength=(0.9+Math.random()*1.8+danger*1.2)*1.5;
-      const maxLife=0.8+Math.random()*0.6;
+
       list.push({
         gfx:g,
-        vx:Math.cos(blowAngle)*blowStrength+(Math.random()-0.5)*0.8,
-        vy:Math.sin(blowAngle)*blowStrength-(0.45+Math.random()*0.9),
+        vx:Math.cos(blowAngle)*blowStrength+(Math.random()-0.5)*0.4,
+        vy:Math.sin(blowAngle)*blowStrength-(0.3+Math.random()*0.5),
+        noisePhase:Math.random()*Math.PI*2,
+        noiseFreq:0.05+Math.random()*0.03,
+        noiseAmp:0.06+Math.random()*0.04,
         life:maxLife,
-        maxLife:maxLife,
-        decay:(0.010+Math.random()*0.009),
-        maxAlpha:baseAlpha,
+        maxLife,
+        decay:0.010+Math.random()*0.008,
+        maxAlpha:alpha,
         expandX:1.010+Math.random()*0.008,
         expandY:1.008+Math.random()*0.006,
-        rot:(Math.random()-0.5)*0.022,
+        rot:(Math.random()-0.5)*0.016,
       });
     }
   }
@@ -3107,18 +3088,18 @@ class GameRenderer{
     d.smokeLayer.x=d.cont.x;d.smokeLayer.y=d.cont.y;
 
     d.smokeTick=(d.smokeTick||0)+dt;
-    const rate=Math.max(120,280-danger*160);
+    const rate=Math.max(200,380-danger*180);
     if(d.smokeTick>=rate){
       d.smokeTick=0;
-      const n=1;
-      // 敵ボードの4角から煙
-      const corners2=[
-        [0,0],[d.boardW,0],[0,d.boardH],[d.boardW,d.boardH]
+      const bw=d.boardW,bh=d.boardH;
+      const sides=[
+        {x:bw/2,y:0,   dx:0, dy:-1},
+        {x:bw/2,y:bh,  dx:0, dy:1},
+        {x:0,   y:bh/2,dx:-1,dy:0},
+        {x:bw,  y:bh/2,dx:1, dy:0},
       ];
-      for(let i=0;i<n;i++){
-        const corner2=corners2[Math.floor(Math.random()*4)];
-        this._spawnNoiseSmokePuff(corner2[0],corner2[1],danger,d.smokeLayer,d.smokeParticles);
-      }
+      const side=sides[Math.floor(Math.random()*4)];
+      this._spawnNoiseSmokePuff(side.x,side.y,side.dx,side.dy,danger,d.smokeLayer,d.smokeParticles);
     }
     d.smokeParticles=d.smokeParticles.filter(p=>{
       p.life-=p.decay;
@@ -3129,7 +3110,9 @@ class GameRenderer{
       else{alpha=p.maxAlpha*(lifeRatio/0.3);}
       p.gfx.alpha=Math.max(0,alpha);
       p.gfx.x+=p.vx;p.gfx.y+=p.vy;
-      p.vx+=(Math.random()-0.5)*0.04;p.vx*=0.98;p.vy*=0.992;
+      if(p.noisePhase!==undefined){p.noisePhase+=p.noiseFreq;p.vx+=Math.sin(p.noisePhase)*p.noiseAmp;}
+      else{p.vx+=(Math.random()-0.5)*0.04;}
+      p.vx*=0.97;p.vy*=0.990;
       p.gfx.scale.x*=p.expandX;p.gfx.scale.y*=p.expandY;p.gfx.rotation+=p.rot;
       if(p.life<=0){try{p.gfx.destroy();}catch(e){}return false;}return true;
     });
