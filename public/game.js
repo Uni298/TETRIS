@@ -1582,8 +1582,8 @@ class GameRenderer{
     this._afterimageAlpha=0;
     this._afterimageData=null; // {shape, x, y, type}
     this.flashGfx=new PIXI.Graphics();this.flashGfx.alpha=0;this.boardCont.addChild(this.flashGfx);
-    // 雷エフェクト（B2B継続中に枠を走る）
-    this.lightningGfx=new PIXI.Graphics();this.lightningGfx.alpha=0;this.boardCont.addChild(this.lightningGfx);
+    // 雷エフェクト: root直下に追加して枠の外側に表示（boardContの外なのでピクセル座標で描画）
+    this.lightningGfx=new PIXI.Graphics();this.lightningGfx.alpha=0;this.root.addChild(this.lightningGfx);
     // 煙エフェクトレイヤー（boardCont の外 = 枠の外に出る）
     this.smokeLayer=new PIXI.Container();this.root.addChild(this.smokeLayer);
     this.gMeterCont=new PIXI.Container();
@@ -1627,7 +1627,21 @@ class GameRenderer{
     this.b2bBadgeNum=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:16,fill:0xffbe0b,fontWeight:'700'}));
     this.b2bBadgeNum.anchor.set(0.5);this.b2bBadgeNum.x=28;this.b2bBadgeNum.y=30;
     this.b2bBadgeCont.addChild(this.b2bBadgeNum);
+    // グリッチノイズ用PixiCanvasテクスチャ
+    this._b2bGlitchCtx=null;this._b2bGlitchTex=null;this._b2bGlitchSpr=null;
+    try{
+      this._b2bGlitchCanvas=document.createElement('canvas');
+      this._b2bGlitchCanvas.width=60;this._b2bGlitchCanvas.height=60;
+      this._b2bGlitchCtx=this._b2bGlitchCanvas.getContext('2d');
+      const base=new PIXI.BaseTexture(this._b2bGlitchCanvas);
+      this._b2bGlitchTex=new PIXI.Texture(base);
+      this._b2bGlitchSpr=new PIXI.Sprite(this._b2bGlitchTex);
+      this._b2bGlitchSpr.alpha=0;
+      try{this._b2bGlitchSpr.blendMode=PIXI.BLEND_MODES.ADD;}catch(e2){}
+      this.b2bBadgeCont.addChild(this._b2bGlitchSpr);
+    }catch(e){console.warn('[b2b glitch] canvas init failed:',e);this._b2bGlitchSpr=null;this._b2bGlitchTex=null;this._b2bGlitchCtx=null;}
     this._b2bPunching=false;this._b2bPunchTime=0;this._b2bGlitchTime=0;this._b2bBadgeColor=0xffbe0b;
+    this._b2bNoiseTimer=0;
     this.b2bBadgeCont.visible=false;
     const n=Object.assign(new PIXI.Text((this.myPlayer?this.myPlayer.name:'').toUpperCase(),new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12*fsc),fill:0x00f5ff,letterSpacing:3})),{x:this.mainBX,y:this.mainBY-22});
     this.root.addChild(n);
@@ -1887,13 +1901,15 @@ class GameRenderer{
       return;
     }
     this.b2bBadgeCont.visible=true;
-    const col=cnt>=8?0x0088ff:cnt>=3?0x00ff88:0xffbe0b;
+    const col=cnt>=8?0x0088ff:cnt>=5?0x00ccff:cnt>=3?0x00ff88:0xffbe0b;
     this.b2bBadgeNum.style.fill=col;
     this.b2bBadgeNum.text='x'+cnt;
-    // 丸バッジ背景（グリッチ毎フレーム再描画はupdateBoardAnimで行う）
+    // B2Bが高いほどバッジも大きく
+    const badgeScale=1+Math.min(cnt*0.06,0.5);
+    this.b2bBadgeCont.scale.set(badgeScale);
     this._b2bBadgeColor=col;
     this._drawB2bBadgeBg(col,0);
-    this.b2bBadgeLbl.style.fill=cnt>=8?0x88ccff:cnt>=3?0x88ffcc:0xffdd88;
+    this.b2bBadgeLbl.style.fill=cnt>=8?0x88ccff:cnt>=5?0x88eeff:cnt>=3?0x88ffcc:0xffdd88;
   }
 
   _drawB2bBadgeBg(col,glitchAmt){
@@ -1930,6 +1946,38 @@ class GameRenderer{
     this._b2bPunchTime=0;
     this._b2bPunching=true;
     this._b2bGlitchTime=180; // 180ms グリッチ持続
+  }
+
+  // B2Bカウンター常時グリッチノイズ更新
+  _updateB2bGlitchNoise(b2bCount){
+    if(!this._b2bGlitchCtx||!this._b2bGlitchTex)return;
+    const ctx=this._b2bGlitchCtx;
+    const W=60,H=60;
+    ctx.clearRect(0,0,W,H);
+    if(b2bCount<1)return;
+    const intensity=Math.min(1,0.1+b2bCount*0.07);
+    // スキャンライン
+    const numLines=Math.floor(intensity*8)+2;
+    for(let i=0;i<numLines;i++){
+      const y=Math.random()*H;
+      const h=Math.random()*3+1;
+      const col=b2bCount>=8?'rgba(0,140,255,':b2bCount>=3?'rgba(0,255,140,':'rgba(255,200,0,';
+      ctx.fillStyle=col+(Math.random()*0.5*intensity)+')';
+      const xoff=(Math.random()-0.5)*12*intensity;
+      ctx.fillRect(xoff,y,W,h);
+    }
+    // RGBずれブロック
+    if(b2bCount>=3){
+      const nb=Math.floor(intensity*4)+1;
+      for(let i=0;i<nb;i++){
+        const bx=Math.random()*W,by=Math.random()*H,bw=Math.random()*20+4,bh=Math.random()*4+1;
+        ctx.fillStyle='rgba(255,0,0,'+(Math.random()*0.25*intensity)+')';ctx.fillRect(bx-2,by,bw,bh);
+        ctx.fillStyle='rgba(0,0,255,'+(Math.random()*0.25*intensity)+')';ctx.fillRect(bx+2,by,bw,bh);
+      }
+    }
+    // テクスチャ更新
+    if(this._b2bGlitchTex&&this._b2bGlitchTex.baseTexture)this._b2bGlitchTex.baseTexture.update();
+    if(this._b2bGlitchSpr)this._b2bGlitchSpr.alpha=Math.min(0.7,0.15+b2bCount*0.06);
   }
 
   // B2B途切れ白稲妻
@@ -2101,11 +2149,11 @@ class GameRenderer{
 
   onSpinSparkle(lockX,lockY,pieceType,spinType){
     if(settings.particles==='off')return;
-    // スピン種別に応じた色
-    const spinColors={'TSPIN':0xffffff,'MINI_TSPIN':0xcc88ff,'ISPIN':0x00f5ff,'SSPIN':0x00e000,'ZSPIN':0xff3300,'LSPIN':0xff8800,'JSPIN':0x0088ff,'SPIN180':0xffffff};
-    const color=spinColors[spinType]||PIECE_COLORS[pieceType]||0xffffff;
-    const shape=PIECE_SHAPES[pieceType]?.[0]||[];
-    const n=settings.particles==='high'?7:4;
+    const color=PIECE_COLORS[pieceType]||0xffffff;
+    // ロック時の形状取得（回転考慮）
+    const rot=(this.gs._lockRot||0);
+    const shape=(PIECE_SHAPES[pieceType])?.[((rot%4)+4)%4]||PIECE_SHAPES[pieceType]?.[0]||[];
+    const n=settings.particles==='high'?3:2;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
       const dr=lockY+r-HIDDEN;if(dr<0)continue;
@@ -2113,18 +2161,27 @@ class GameRenderer{
       const py=this.mainBY+dr*CELL+CELL/2;
       for(let i=0;i<n;i++){
         const g=new PIXI.Graphics();
-        const sz=Math.random()*3+1;
-        // Star/cross shape for T-spin sparkle
-        if(i%3===0){
-          g.beginFill(color,0.95);
-          g.moveTo(0,-sz*2.5);g.lineTo(sz*0.5,0);g.lineTo(0,sz*2.5);g.lineTo(-sz*0.5,0);
-          g.closePath();g.endFill();
-        }else{g.beginFill(color,0.9);g.drawCircle(0,0,sz);g.endFill();}
-        g.x=px+(Math.random()-0.5)*CELL;g.y=py+(Math.random()-0.5)*CELL;
+        // アステロイド曲線 (4尖頭の外サイクロイド): x=a*cos³t, y=a*sin³t
+        const sz=Math.random()*5+3;
+        const pts=20;
+        // 白グロー
+        g.beginFill(0xffffff,0.5);
+        g.moveTo(sz,0);
+        for(let k=1;k<=pts;k++){const t=(k/pts)*Math.PI*2;g.lineTo(sz*Math.pow(Math.cos(t),3),sz*Math.pow(Math.sin(t),3));}
+        g.closePath();g.endFill();
+        // ミノ色
+        const sz2=sz*0.78;
+        g.beginFill(color,0.9);
+        g.moveTo(sz2,0);
+        for(let k=1;k<=pts;k++){const t=(k/pts)*Math.PI*2;g.lineTo(sz2*Math.pow(Math.cos(t),3),sz2*Math.pow(Math.sin(t),3));}
+        g.closePath();g.endFill();
+        g.x=px+(Math.random()-0.5)*CELL*0.6;
+        g.y=py+(Math.random()-0.5)*CELL*0.6;
+        g.rotation=Math.random()*Math.PI*2;
         this.effectsLayer.addChild(g);
         const angle=Math.random()*Math.PI*2;
-        const speed=Math.random()*3+1;
-        this.particles.push({gfx:g,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed-2,life:1,decay:0.028+Math.random()*0.02});
+        const speed=Math.random()*3.5+1.5;
+        this.particles.push({gfx:g,vx:Math.cos(angle)*speed,vy:Math.sin(angle)*speed-2.5,life:1,decay:0.022+Math.random()*0.018,rot:(Math.random()-0.5)*0.2});
       }
     }
   }
@@ -2567,26 +2624,34 @@ class GameRenderer{
   // B2B 雷エフェクト: 枠の周囲をジグザグの雷が走る + 稲妻ボルトを発射
   _triggerLightning(b2bCount){
     if(settings.quality==='low'||settings.quality==='minimum')return;
-    if(b2bCount<3)return; // B2B3以上から発動
-    this._lightningTimer=Math.min(80,40+b2bCount*8);
-    this._b2bIntensity=Math.min(1,0.4+b2bCount*0.12);
+    if(b2bCount<1)return; // B2B1以上から発動（以前は3から）
+    this._lightningTimer=Math.min(120,30+b2bCount*12);
+    this._b2bIntensity=Math.min(1.2,0.3+b2bCount*0.12);
     // 稲妻ボルトを枠の各辺からスポーン
     const sc2=this._uiScale||1;
     const bx=this.mainBX,by=this.mainBY;
     const bw=BOARD_W*sc2,bh=BOARD_H*sc2;
-    const color=b2bCount>=8?0x0088ff:0x00ff88;
-    const intensity=Math.min(1.5,0.6+b2bCount*0.1);
-    const numBolts=b2bCount>=8?6:b2bCount>=5?4:2;
-    const branches=b2bCount>=8?3:2;
+    const color=b2bCount>=8?0x0088ff:b2bCount>=5?0x00ccff:b2bCount>=3?0x00ff88:0xffbe0b;
+    const intensity=Math.min(1.8,0.5+b2bCount*0.15);
+    const numBolts=b2bCount>=8?8:b2bCount>=5?6:b2bCount>=3?4:2;
+    const branches=b2bCount>=8?4:b2bCount>=5?3:2;
     for(let i=0;i<numBolts;i++){
-      // 4辺からランダムに選択してボルトを外向きに発射
       const side=Math.floor(Math.random()*4);
       let sx,sy,angle;
-      if(side===0){sx=bx+Math.random()*bw;sy=by;angle=-Math.PI/2+(Math.random()-0.5)*0.8;}     // 上→上
-      else if(side===1){sx=bx+Math.random()*bw;sy=by+bh;angle=Math.PI/2+(Math.random()-0.5)*0.8;} // 下→下
-      else if(side===2){sx=bx;sy=by+Math.random()*bh;angle=Math.PI+(Math.random()-0.5)*0.8;}      // 左→左
-      else{sx=bx+bw;sy=by+Math.random()*bh;angle=0+(Math.random()-0.5)*0.8;}                      // 右→右
+      if(side===0){sx=bx+Math.random()*bw;sy=by;angle=-Math.PI/2+(Math.random()-0.5)*0.8;}
+      else if(side===1){sx=bx+Math.random()*bw;sy=by+bh;angle=Math.PI/2+(Math.random()-0.5)*0.8;}
+      else if(side===2){sx=bx;sy=by+Math.random()*bh;angle=Math.PI+(Math.random()-0.5)*0.8;}
+      else{sx=bx+bw;sy=by+Math.random()*bh;angle=0+(Math.random()-0.5)*0.8;}
       this._spawnLightningBolt(sx,sy,angle,color,intensity,branches);
+    }
+    // B2B5以上: 追加で対角線ボルト
+    if(b2bCount>=5){
+      const corners=[[bx,by,Math.PI*1.25],[bx+bw,by,Math.PI*1.75],[bx,by+bh,Math.PI*0.75],[bx+bw,by+bh,Math.PI*0.25]];
+      const n=b2bCount>=8?4:2;
+      for(let i=0;i<n;i++){
+        const [cx,cy,ca]=corners[i%4];
+        this._spawnLightningBolt(cx,cy,ca+(Math.random()-0.5)*0.5,color,intensity*0.8,branches-1);
+      }
     }
   }
 
@@ -2598,27 +2663,49 @@ class GameRenderer{
       const intensity=this._b2bIntensity||0.7;
       const b2b=this._b2bCount||1;
       // B2B3以上=緑, B2B8以上=青, breakFlash=白
-      const lCol=this._lightningBreakFlash?0xffffff:b2b>=8?0x0088ff:b2b>=3?0x00ff88:0xffbe0b;
+      const lCol=this._lightningBreakFlash?0xffffff:b2b>=8?0x0088ff:b2b>=5?0x44ddff:b2b>=3?0x00ff88:0xffbe0b;
       g.alpha=intensity*(0.6+0.4*Math.random());
-      const bw=BOARD_W,bh=BOARD_H;
+      // 枠の外側ワールド座標で描画
+      const sc=this._uiScale||1;
+      const ox=this.mainBX-2,oy=this.mainBY;
+      const bw=BOARD_W*sc+4,bh=BOARD_H*sc+4;
       const segs=6+Math.floor(b2b*1.5);
-      const amp=3+b2b*1.2;
-      const lw=1+Math.min(b2b*0.4,2.5);
+      // B2Bが高いほど振れ幅大きく
+      const amp=Math.min(3+b2b*1.5, 20);
+      const lw=1.5+Math.min(b2b*0.5,4);
+      // 外側枠ライン (枠border外3px)
+      const pad=3+Math.min(b2b*0.5,6);
       g.lineStyle(lw,lCol,0.9);
-      this._drawZigzag(g,0,0,bw,0,segs,amp,'h');
-      this._drawZigzag(g,0,bh,bw,bh,segs,amp,'h');
-      this._drawZigzag(g,0,0,0,bh,segs,amp,'v');
-      this._drawZigzag(g,bw,0,bw,bh,segs,amp,'v');
-      // B2B8以上: 内側にも追加ライン
+      this._drawZigzag(g,ox-pad,oy-pad,ox+bw+pad,oy-pad,segs,amp,'h');
+      this._drawZigzag(g,ox-pad,oy+bh+pad,ox+bw+pad,oy+bh+pad,segs,amp,'h');
+      this._drawZigzag(g,ox-pad,oy-pad,ox-pad,oy+bh+pad,segs,amp,'v');
+      this._drawZigzag(g,ox+bw+pad,oy-pad,ox+bw+pad,oy+bh+pad,segs,amp,'v');
+      // B2B3以上: 内側にも薄い追加ライン
+      if(b2b>=3){
+        g.lineStyle(lw*0.6,lCol,0.4*Math.random());
+        this._drawZigzag(g,ox,oy,ox+bw,oy,segs,amp*0.5,'h');
+        this._drawZigzag(g,ox,oy+bh,ox+bw,oy+bh,segs,amp*0.5,'h');
+        this._drawZigzag(g,ox,oy,ox,oy+bh,segs,amp*0.5,'v');
+        this._drawZigzag(g,ox+bw,oy,ox+bw,oy+bh,segs,amp*0.5,'v');
+      }
+      // B2B5以上: コーナーグロー
+      if(b2b>=5){
+        const glowCol=b2b>=8?0x88eeff:0x44ffcc;
+        g.lineStyle(lw*1.2,glowCol,0.55*Math.random());
+        const cr=16+b2b*2;
+        // 4コーナーにアーク
+        for(const [cx,cy,sa] of [[ox-pad,oy-pad,-Math.PI/2],[ox+bw+pad,oy-pad,0],[ox+bw+pad,oy+bh+pad,Math.PI/2],[ox-pad,oy+bh+pad,Math.PI]]){
+          g.arc(cx,cy,cr,sa,sa+Math.PI/2);
+        }
+      }
+      // B2B8以上: 追加の外側ラインと放電エフェクト
       if(b2b>=8){
-        g.lineStyle(lw*0.7,0x44bbff,0.5*Math.random());
-        this._drawZigzag(g,4,4,bw-4,4,segs,amp*0.5,'h');
-        this._drawZigzag(g,4,4,4,bh-4,segs,amp*0.5,'v');
-        this._drawZigzag(g,bw-4,4,bw-4,bh-4,segs,amp*0.5,'v');
-        this._drawZigzag(g,4,bh-4,bw-4,bh-4,segs,amp*0.5,'h');
-      } else if(b2b>=3){
-        g.lineStyle(lw*0.5,0x88ffcc,0.35*Math.random());
-        this._drawZigzag(g,4,4,bw-4,4,segs,amp*0.5,'h');
+        g.lineStyle(lw*0.8,0x44bbff,0.45*Math.random());
+        const pad2=pad+8;
+        this._drawZigzag(g,ox-pad2,oy-pad2,ox+bw+pad2,oy-pad2,segs+4,amp*1.4,'h');
+        this._drawZigzag(g,ox-pad2,oy+bh+pad2,ox+bw+pad2,oy+bh+pad2,segs+4,amp*1.4,'h');
+        this._drawZigzag(g,ox-pad2,oy-pad2,ox-pad2,oy+bh+pad2,segs+4,amp*1.4,'v');
+        this._drawZigzag(g,ox+bw+pad2,oy-pad2,ox+bw+pad2,oy+bh+pad2,segs+4,amp*1.4,'v');
       }
     } else {
       if(this.lightningGfx.alpha>0){
@@ -3017,21 +3104,29 @@ class GameRenderer{
         this.b2bBadgeNum.scale.set(Math.max(1,scale));
         if(t>=1){this._b2bPunching=false;this.b2bBadgeNum.scale.set(1);}
       }
-      // グリッチ
+      // グリッチ (パンチ時)
       if(this._b2bGlitchTime>0){
         this._b2bGlitchTime-=dt;
         const intensity=Math.min(1,this._b2bGlitchTime/180);
-        // ランダムオフセット揺れ
         const jx=(Math.random()-0.5)*4*intensity;
-        const jy=(Math.random()-0.5)*2*intensity;
         this.b2bBadgeNum.x=28+jx;
-        // 背景グリッチ再描画
         if(Math.random()<0.4) this._drawB2bBadgeBg(this._b2bBadgeColor||0xffbe0b,intensity);
         if(this._b2bGlitchTime<=0){
           this.b2bBadgeNum.x=28;
           this._drawB2bBadgeBg(this._b2bBadgeColor||0xffbe0b,0);
         }
       }
+      // 常時グリッチノイズ (B2Bが高いほど強く)
+      if(this._b2bGlitchTex&&this._b2bNoiseTimer!==undefined){
+        this._b2bNoiseTimer+=dt;
+        const noiseInterval=Math.max(30,120-this._b2bCount*10);
+        if(this._b2bNoiseTimer>=noiseInterval){
+          this._b2bNoiseTimer=0;
+          this._updateB2bGlitchNoise(this._b2bCount||0);
+        }
+      }
+    } else if(this._b2bGlitchSpr){
+      this._b2bGlitchSpr.alpha=0;
     }
     // B2B 雷エフェクト更新
     this._drawLightning(dt);
@@ -3277,6 +3372,7 @@ class GameRenderer{
   updateParticlesEtc(dt){
     this.particles=this.particles.filter(p=>{
       p.gfx.x+=p.vx;p.gfx.y+=p.vy;p.vy+=0.28;p.life-=p.decay;p.gfx.alpha=p.life;
+      if(p.rot)p.gfx.rotation+=p.rot;
       if(p.life<=0){try{p.gfx.destroy();}catch(e){}return false;}return true;
     });
     this.floatLabels=this.floatLabels.filter(fl=>{fl.update(dt);return fl.alive;});
