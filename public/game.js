@@ -914,7 +914,7 @@ class TetrisGame{
       const base={...this.current,rotation:newRot,customShape:rotated};
       if(this.isValid(base)){
         this.current=base;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
-        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
       // Try simple kicks for custom pieces
@@ -922,7 +922,7 @@ class TetrisGame{
         const t={...base,x:base.x+kx,y:base.y-ky};
         if(this.isValid(t)){
           this.current=t;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
-          if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+          if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
           return true;
         }
       }
@@ -933,14 +933,14 @@ class TetrisGame{
     const base={...this.current,rotation:newRot};
     if(this.isValid(base)){
       this.current=base;this.checkSpin(0,0,false);this.tryResetLock();SFX.rotate();
-      if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+      if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
       return true;
     }
     if(kicks)for(const[kx,ky]of kicks){
       const t={...base,x:base.x+kx,y:base.y-ky};
       if(this.isValid(t)){
         this.current=t;this.checkSpin(kx,ky,true);this.tryResetLock();SFX.rotate();
-        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
+        if(this.lastSpin){renderer&&renderer.onSpinTilt(dir);renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);}
         return true;
       }
     }
@@ -960,7 +960,8 @@ class TetrisGame{
         this.lastSpin='T';this.lastSpinType=ff.length>=2?'TSPIN':'MINI_TSPIN';
       }
     }
-    if(['S','Z','L','J'].includes(type)&&kicked){
+    if(['S','Z','L','J'].includes(type)){
+      // kick不要: 着地状態（下にブロックまたは床）でスピン判定
       const shape=this.getShape(type,rot,null);let bb=false;
       outer:for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
         if(!shape[r][c])continue;const ny=y+r+1;
@@ -968,7 +969,52 @@ class TetrisGame{
       }
       if(bb){this.lastSpin=type;this.lastSpinType=type+'SPIN';}
     }
-    if(type==='I'&&kicked&&(Math.abs(kx)>=1||Math.abs(ky)>=1)){this.lastSpin='I';this.lastSpinType='ISPIN';}
+    if(type==='I'){
+      // Iスピン: kick または 縦方向の場合に判定
+      if(kicked&&(Math.abs(kx)>=1||Math.abs(ky)>=1)){this.lastSpin='I';this.lastSpinType='ISPIN';}
+    }
+  }
+
+  // 180°回転（Aキー）: kick付きで試行、スピン判定はlockPiece時に行う
+  rotate180(){
+    if(!this.current)return false;
+    const prePiece={...this.current};
+    const preShape=this._getShapeForPiece(this.current).map(r=>[...r]);
+    const oldRot=this.current.rotation;
+    const newRot=(oldRot+2)%4;
+
+    // カスタム形状はrotateMatrix 2回
+    if(this.current.customShape){
+      const r1=rotateMatrix(this.current.customShape,1);
+      const r2=rotateMatrix(r1,1);
+      const base={...this.current,rotation:newRot,customShape:r2};
+      const kicks180=[[0,0],[-1,0],[1,0],[0,1],[-1,1],[1,1]];
+      for(const[kx,ky]of kicks180){
+        const t={...base,x:base.x+kx,y:base.y+ky};
+        if(this.isValid(t)){this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';this.tryResetLock();SFX.rotate();
+          renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);
+          return true;}
+      }
+      return false;
+    }
+
+    // 通常ピース: SRS 180°kick テーブル (Tetrax準拠)
+    const kicks180={
+      'O':[[0,0]],
+      'I':[[0,0],[1,0],[-1,0],[2,0],[-2,0],[0,-1],[0,1]],
+    }[this.current.type]||[[0,0],[1,0],[-1,0],[0,1],[1,1],[-1,1]];
+    const base={...this.current,rotation:newRot};
+    for(const[kx,ky]of kicks180){
+      const t={...base,x:base.x+kx,y:base.y+ky};
+      if(this.isValid(t)){
+        this.current=t;this.lastSpin='180';this.lastSpinType='SPIN180';
+        this.tryResetLock();SFX.rotate();
+        renderer&&renderer.triggerAfterimage(prePiece,preShape,this.lastSpinType);
+        renderer&&renderer.onSpinRotateSparkle(this.current,this.lastSpinType);
+        return true;
+      }
+    }
+    return false;
   }
 
   move(dx){
@@ -1017,7 +1063,7 @@ class TetrisGame{
       const ny=this.current.y+r,nx=this.current.x+c;
       if(ny>=0&&ny<ROWS+HIDDEN&&nx>=0&&nx<COLS)this.board[ny][nx]=this.current.type;
     }
-    if(wasSpin){SFX.spinLock();socket.emit('spin_effect',{spinType});renderer&&renderer.onSpinSparkle(this._lockX,this._lockY,this._lockType);}
+    if(wasSpin){SFX.spinLock();socket.emit('spin_effect',{spinType});renderer&&renderer.onSpinSparkle(this._lockX,this._lockY,this._lockType,spinType);}
     else SFX.lock();
     this.clearLines();
   }
@@ -1029,7 +1075,10 @@ class TetrisGame{
     }
     const count=cleared.length;
     this._lastLinesCleared=count; // for training data
-    const spinType=this.lastSpinType,isSpin=!!this.lastSpin,isMini=spinType&&spinType.startsWith('MINI'),isTSpin=this.lastSpin==='T';
+    const is180Spin=this.lastSpin==='180';
+    // 180°スピンはライン消去があった場合のみスピン扱い（確定はcount>0後に上書き）
+    const rawIsSpin=!!this.lastSpin;
+    let spinType=this.lastSpinType,isSpin=rawIsSpin&&!is180Spin,isMini=spinType&&spinType.startsWith('MINI'),isTSpin=this.lastSpin==='T';
 
     let allClear=false;
     if(count>0){
@@ -1067,6 +1116,8 @@ class TetrisGame{
         SFX.garbage();renderer&&renderer.onGarbageApplied(remaining.reduce((a,b)=>a+b.lines,0));
       }
 
+      // 180°スピン: ライン消去が1枚以上あった場合のみスピン有効（傾きなし）
+      if(is180Spin&&count>=1){isSpin=true;}
       this.combo++;this.ren++;
       if(this.ren>1)SFX.ren(this.ren);
       // 5-line clear (mutation mode): always B2B-eligible, not counted in standard B2B chain
@@ -1367,6 +1418,8 @@ class GameRenderer{
     this._gameOverTick=null;
     // B2B 雷エフェクト
     this._b2bCount=0;this._lightningBolts=[];this._lightningTimer=0;
+    // B2Bバッジ初期化 (buildSideUI後に呼ばれるので存在チェック)
+    if(this.b2bBadgeCont)this.b2bBadgeCont.visible=false;
     // 煙エフェクト（危機状態）
     this._smokeParticles=[];this._smokeTick=0;
     this.root=new PIXI.Container();app.stage.addChild(this.root);
@@ -1562,6 +1615,20 @@ class GameRenderer{
     // HOLD
     this.holdCont=new PIXI.Container();this.holdCont.x=this.mainBX-90;this.holdCont.y=this.mainBY+sOffY;this.root.addChild(this.holdCont);    this.holdCont.addChild(lbl('HOLD',0,0));
     this.holdGfx=new PIXI.Graphics();this.holdGfx.y=18;this.holdCont.addChild(this.holdGfx);
+    // B2Bバッジ (holdの下)
+    this.b2bBadgeCont=new PIXI.Container();
+    this.b2bBadgeCont.x=this.mainBX-90;
+    this.b2bBadgeCont.y=this.mainBY+sOffY+90;
+    this.root.addChild(this.b2bBadgeCont);
+    this.b2bBadgeBg=new PIXI.Graphics();this.b2bBadgeCont.addChild(this.b2bBadgeBg);
+    this.b2bBadgeLbl=new PIXI.Text('B2B',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:7,fill:0x888888,letterSpacing:2}));
+    this.b2bBadgeLbl.anchor.set(0.5);this.b2bBadgeLbl.x=28;this.b2bBadgeLbl.y=13;
+    this.b2bBadgeCont.addChild(this.b2bBadgeLbl);
+    this.b2bBadgeNum=new PIXI.Text('',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:16,fill:0xffbe0b,fontWeight:'700'}));
+    this.b2bBadgeNum.anchor.set(0.5);this.b2bBadgeNum.x=28;this.b2bBadgeNum.y=30;
+    this.b2bBadgeCont.addChild(this.b2bBadgeNum);
+    this._b2bPunching=false;this._b2bPunchTime=0;this._b2bGlitchTime=0;this._b2bBadgeColor=0xffbe0b;
+    this.b2bBadgeCont.visible=false;
     const n=Object.assign(new PIXI.Text((this.myPlayer?this.myPlayer.name:'').toUpperCase(),new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12*fsc),fill:0x00f5ff,letterSpacing:3})),{x:this.mainBX,y:this.mainBY-22});
     this.root.addChild(n);
   }
@@ -1726,7 +1793,7 @@ class GameRenderer{
     if(d.lightGfx&&d.lightTimer>0&&settings.quality!=='low'&&settings.quality!=='minimum'){
       d.lightTimer-=16;
       const b2b=d.b2bCount||1;
-      const lCol=b2b>=5?0xffffff:b2b>=3?0x00f5ff:0xffbe0b;
+      const lCol=b2b>=8?0x0088ff:b2b>=3?0x00ff88:0xffbe0b;
       d.lightGfx.clear();
       d.lightGfx.alpha=(0.5+0.4*Math.random())*Math.min(1,(d.lightTimer/40));
       const segs=4+Math.floor(b2b*1.2),amp=2+b2b*0.8,lw2=0.8+Math.min(b2b*0.3,1.8);
@@ -1767,7 +1834,7 @@ class GameRenderer{
     for(const item of queue){
       const h=Math.min(item.lines*(CELL*0.85),y);y-=h;
       const pct=Math.max(0,(item.readyAt-now)/3000);
-      const col=pct>0.5?0xffbe0b:pct>0.2?0xff8500:0xff006e;
+      const col=0xff006e;
       g.beginFill(col,0.85);g.drawRect(0,y,10,h);g.endFill();
       if(pct<=0){
         const pulse=0.5+0.5*Math.abs(Math.sin(now*0.008));
@@ -1797,14 +1864,12 @@ class GameRenderer{
     // ゲージ高さ (最大20行分でbh全体)
     const h=Math.min(lines/20,1)*bh;
     const y=bh-h;
-    // 行数に応じた色
-    const col=lines>=8?0xff006e:lines>=4?0xff8500:0xffbe0b;
+    // 固定色（グラデーションなし）
+    const col=0xff006e;
     g.beginFill(col,0.85);g.drawRect(0,y,6,h);g.endFill();
-    // 点滅枠 (2行以上でレディ状態を示す)
-    if(lines>=2){
-      const pulse=0.4+0.6*Math.abs(Math.sin(performance.now()*0.006));
-      g.lineStyle(1,col,pulse);g.drawRect(0,y,6,h);g.lineStyle(0);
-    }
+    // 点滅枠
+    const pulse=0.4+0.6*Math.abs(Math.sin(performance.now()*0.006));
+    g.lineStyle(1,col,pulse);g.drawRect(0,y,6,h);g.lineStyle(0);
   }
 
   updateScoreUI(){
@@ -1812,6 +1877,83 @@ class GameRenderer{
     this.linesTxt.text=this.gs.lines.toString();
     this.levelTxt.text=this.gs.level.toString();
     this.updateVisibleOpponents();
+  }
+
+  updateB2bBadge(){
+    if(!this.b2bBadgeCont)return;
+    const cnt=this._b2bCount||0;
+    if(cnt<1){
+      this.b2bBadgeCont.visible=false;
+      return;
+    }
+    this.b2bBadgeCont.visible=true;
+    const col=cnt>=8?0x0088ff:cnt>=3?0x00ff88:0xffbe0b;
+    this.b2bBadgeNum.style.fill=col;
+    this.b2bBadgeNum.text='x'+cnt;
+    // 丸バッジ背景（グリッチ毎フレーム再描画はupdateBoardAnimで行う）
+    this._b2bBadgeColor=col;
+    this._drawB2bBadgeBg(col,0);
+    this.b2bBadgeLbl.style.fill=cnt>=8?0x88ccff:cnt>=3?0x88ffcc:0xffdd88;
+  }
+
+  _drawB2bBadgeBg(col,glitchAmt){
+    const bg=this.b2bBadgeBg;bg.clear();
+    const R=28; // 半径
+    // メイン丸
+    bg.beginFill(0x000011,0.82);bg.lineStyle(2,col,0.85);
+    bg.drawCircle(R,R,R);bg.endFill();
+    // 内側リング
+    bg.lineStyle(1,col,0.35);bg.drawCircle(R,R,R*0.75);
+    // グリッチスキャンライン
+    if(glitchAmt>0){
+      const numLines=Math.floor(glitchAmt*4);
+      for(let i=0;i<numLines;i++){
+        const gy=Math.random()*R*2;
+        const gw=(Math.random()*0.7+0.1)*R*2;
+        const gx=(Math.random()-0.5)*(R*2-gw);
+        bg.lineStyle(0);
+        bg.beginFill(col,Math.random()*0.35);
+        bg.drawRect(R-R+gx,gy,gw,1.5);
+        bg.endFill();
+      }
+      // オフセットコピー（RGBずらし）
+      bg.lineStyle(1,0xff0000,glitchAmt*0.4);
+      bg.drawCircle(R+glitchAmt*2,R,R);
+      bg.lineStyle(1,0x0000ff,glitchAmt*0.4);
+      bg.drawCircle(R-glitchAmt*2,R,R);
+    }
+  }
+
+  // B2Bカウント更新パンチエフェクト (数字がスケールアップして戻る)
+  _punchB2bBadge(){
+    if(!this.b2bBadgeNum)return;
+    this._b2bPunchTime=0;
+    this._b2bPunching=true;
+    this._b2bGlitchTime=180; // 180ms グリッチ持続
+  }
+
+  // B2B途切れ白稲妻
+  _breakB2bLightning(){
+    if(settings.quality==='low'||settings.quality==='minimum')return;
+    const bx=this.mainBX,by=this.mainBY;
+    const bw=BOARD_W*(this._uiScale||1),bh=BOARD_H*(this._uiScale||1);
+    const numBolts=8;
+    for(let i=0;i<numBolts;i++){
+      const side=Math.floor(Math.random()*4);
+      let sx,sy,angle;
+      if(side===0){sx=bx+Math.random()*bw;sy=by;angle=-Math.PI/2+(Math.random()-0.5)*1.2;}
+      else if(side===1){sx=bx+Math.random()*bw;sy=by+bh;angle=Math.PI/2+(Math.random()-0.5)*1.2;}
+      else if(side===2){sx=bx;sy=by+Math.random()*bh;angle=Math.PI+(Math.random()-0.5)*1.2;}
+      else{sx=bx+bw;sy=by+Math.random()*bh;angle=(Math.random()-0.5)*1.2;}
+      this._spawnLightningBolt(sx,sy,angle,0xffffff,1.5,3);
+    }
+    // 枠を一瞬白く光らせる
+    if(this.lightningGfx){
+      this._lightningTimer=25;
+      this._b2bIntensity=1.2;
+      this._lightningBreakFlash=true;
+      setTimeout(()=>{this._lightningBreakFlash=false;},300);
+    }
   }
 
   // スピン確定時のみ傾く
@@ -1914,19 +2056,18 @@ class GameRenderer{
   }
 
   // spin確定時: 白いキラキラを表示 (T-spinは白)
-  triggerAfterimage(piece, shape){
+  triggerAfterimage(piece, shape, spinType){
     if(settings.particles==='off') return;
-    // Store piece snapshot for afterimage rendering
     this._afterimageData = {
       shape: shape.map(r=>[...r]),
       x: piece.x,
       y: piece.y,
-      type: piece.type
+      type: piece.type,
+      spinType: spinType||null
     };
-    this._afterimageAlpha = 0.72; // start semi-transparent
-    this._afterimageLife = 300; // ms to keep afterimage
+    this._afterimageAlpha = 0.78;
+    this._afterimageLife = 350;
     this.afterimageGfx.alpha = this._afterimageAlpha;
-    // Draw immediately
     this._drawAfterimage();
   }
 
@@ -1942,20 +2083,27 @@ class GameRenderer{
       if(dr < 0) continue;
       const px = d.x*CELL + c*CELL;
       const py = dr*CELL;
-      const color = PIECE_COLORS[d.type] || 0xffffff;
-      // Draw as outline + dim fill (pre-spin ghost look)
-      g.beginFill(color, 0.25);
-      g.lineStyle(1.5, color, 0.9);
+      const baseColor = PIECE_COLORS[d.type] || 0xffffff;
+      const spinColors={'TSPIN':0xcc44ff,'MINI_TSPIN':0xcc88ff,'ISPIN':0x00f5ff,'SSPIN':0x00e000,'ZSPIN':0xff3300,'LSPIN':0xff8800,'JSPIN':0x0088ff,'SPIN180':0xffffff,'JSPIN':0x0055ff};
+      const color = d.spinType ? (spinColors[d.spinType]||baseColor) : baseColor;
+      g.beginFill(color, 0.22);
+      g.lineStyle(2, color, 0.95);
       g.drawRect(px+1, py+1, CELL-2, CELL-2);
+      g.endFill();
+      // 内側の白グロー
+      g.beginFill(0xffffff, 0.12);
+      g.lineStyle(0);
+      g.drawRect(px+2, py+2, CELL-4, CELL-4);
       g.endFill();
       g.lineStyle(0);
     }
   }
 
-  onSpinSparkle(lockX,lockY,pieceType){
+  onSpinSparkle(lockX,lockY,pieceType,spinType){
     if(settings.particles==='off')return;
-    // T-spin sparkle is WHITE; other spin sparkles use piece color
-    const color=0xffffff; // always white for T-spin
+    // スピン種別に応じた色
+    const spinColors={'TSPIN':0xffffff,'MINI_TSPIN':0xcc88ff,'ISPIN':0x00f5ff,'SSPIN':0x00e000,'ZSPIN':0xff3300,'LSPIN':0xff8800,'JSPIN':0x0088ff,'SPIN180':0xffffff};
+    const color=spinColors[spinType]||PIECE_COLORS[pieceType]||0xffffff;
     const shape=PIECE_SHAPES[pieceType]?.[0]||[];
     const n=settings.particles==='high'?7:4;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
@@ -1994,7 +2142,11 @@ class GameRenderer{
     // T-SPIN DOUBLE/TRIPLE は色付きフラッシュ
     const isTDouble=spinType==='TSPIN'&&count===2;
     const isTTriple=spinType==='TSPIN'&&count===3;
-    const flashColor=isTTriple?0xff00ff:isTDouble?0xcc44ff:allClear?0xffff00:0xffffff;
+    const isAnySpin=!!spinType&&count>=1;
+    // スピン種別に応じた色（T=紫系, I=水色, S/Z/L/J/180=ピース色 or 白）
+    const spinColors={'TSPIN':0xcc44ff,'MINI_TSPIN':0xcc44ff,'ISPIN':0x00f5ff,'SSPIN':0x00e000,'ZSPIN':0xff3300,'LSPIN':0xff8800,'JSPIN':0x0088ff,'SPIN180':0xffffff};
+    const spinChunkColor=spinColors[spinType]||0xffffff;
+    const flashColor=isTTriple?0xff00ff:isTDouble?0xcc44ff:isAnySpin?(spinColors[spinType]||0xffffff):allClear?0xffff00:0xffffff;
     cleared.forEach(r=>{const dr=r-HIDDEN;if(dr<0)return;this.flashGfx.beginFill(flashColor,0.9);this.flashGfx.drawRect(0,dr*CELL,BOARD_W,CELL);this.flashGfx.endFill();});
     if(settings.shake==='on')this.shakePower=Math.min(16,count*3+(spinType?5:0)+(allClear?12:0));
     if(count>=4||allClear)this.boardOffsetY=Math.max(this.boardOffsetY,24);
@@ -2014,19 +2166,23 @@ class GameRenderer{
         for(let i=0;i<25;i++)this.spawnParticle(this.mainBX+BOARD_W/2,this.mainBY+dr*CELL+CELL/2,0xffffff,false,true);
       });
       // テトリス（4ライン消し）: 枠から破片が飛び出す演出（無効化済み）
-      // T-SPIN DOUBLE: 2つの塊エフェクト
-      if(isTDouble&&settings.particles!=='off')this._spawnTSpinChunks(cleared,2,0xcc44ff);
-      // T-SPIN TRIPLE: 3つの塊エフェクト
-      if(isTTriple&&settings.particles!=='off')this._spawnTSpinChunks(cleared,3,0xff00ff);
+      // スピン系: チャンクエフェクト（T以外も含む）
+      if(isAnySpin&&settings.particles!=='off'){
+        const chunkCount=isTTriple?3:isTDouble||count>=2?2:1;
+        this._spawnTSpinChunks(cleared,chunkCount,spinChunkColor);
+      }
     }
 
     // B2B 雷エフェクト
     if(isB2B){
       this._b2bCount=(this._b2bCount||0)+1;
       this._triggerLightning(this._b2bCount);
+      this._punchB2bBadge(); // カウント更新エフェクト
     } else if(!isB2B&&!spinType&&count<4){
+      if(this._b2bCount>=1) this._breakB2bLightning(); // B2B途切れ白稲妻
       this._b2bCount=0;
     }
+    this.updateB2bBadge();
 
     // === REN エスカレーティング・エフェクト ===
     if(ren>=2&&settings.quality!=='minimum'){
@@ -2362,11 +2518,76 @@ class GameRenderer{
     }
   }
 
-  // B2B 雷エフェクト: 枠の周囲をジグザグの雷が走る
+  // 稲妻ボルトを1本生成: 枠の辺上の点から分岐しながら広がる
+  _spawnLightningBolt(startX,startY,dirAngle,color,intensity,branches){
+    if(settings.particles==='off')return;
+    const maxLen=CELL*(2.5+Math.random()*3)*intensity;
+    const numSegs=5+Math.floor(Math.random()*5);
+    // 再帰的にジグザグ線を生成してGraphicsに描画
+    const drawBolt=(g,x,y,angle,len,depth)=>{
+      if(depth<=0||len<4)return;
+      const segLen=len/numSegs;
+      let cx=x,cy=y;
+      for(let i=0;i<numSegs;i++){
+        const jitter=(Math.random()-0.5)*len*0.7;
+        const nx=cx+Math.cos(angle)*segLen+(Math.random()-0.5)*jitter*0.5;
+        const ny=cy+Math.sin(angle)*segLen+jitter;
+        g.lineTo(nx,ny);
+        // 分岐
+        if(depth>1&&Math.random()<0.4){
+          const branchAngle=angle+(Math.random()-0.5)*1.4;
+          const bg2=new PIXI.Graphics();
+          bg2.lineStyle(Math.max(0.5,(g._lineStyle?.width||1)*0.55),color,0.7);
+          bg2.moveTo(cx,cy);
+          drawBolt(bg2,cx,cy,branchAngle,len*0.45,depth-1);
+          bg2.x=0;bg2.y=0;
+          this.effectsLayer.addChild(bg2);
+          this._lightningBolts.push({gfx:bg2,vx:0,vy:0,life:1,decay:0.04+Math.random()*0.03,rot:0,isChunk:false,isBolt:true});
+        }
+        cx=nx;cy=ny;
+      }
+    };
+    const sc2=this._uiScale||1;
+    const lw=1.2+intensity*1.2;
+    const g=new PIXI.Graphics();
+    g.lineStyle(lw,color,0.95);
+    g.moveTo(startX,startY);
+    drawBolt(g,startX,startY,dirAngle,maxLen,branches);
+    // グロー (白い細線を重ねる)
+    const glow=new PIXI.Graphics();
+    glow.lineStyle(lw*0.4,0xffffff,0.5);
+    glow.moveTo(startX,startY);
+    drawBolt(glow,startX,startY,dirAngle,maxLen*0.9,branches-1);
+    this.effectsLayer.addChild(g);
+    this.effectsLayer.addChild(glow);
+    this._lightningBolts.push({gfx:g,vx:0,vy:0,life:1,decay:0.055+Math.random()*0.03,rot:0,isChunk:false,isBolt:true});
+    this._lightningBolts.push({gfx:glow,vx:0,vy:0,life:0.7,decay:0.08,rot:0,isChunk:false,isBolt:true});
+  }
+
+  // B2B 雷エフェクト: 枠の周囲をジグザグの雷が走る + 稲妻ボルトを発射
   _triggerLightning(b2bCount){
     if(settings.quality==='low'||settings.quality==='minimum')return;
-    this._lightningTimer=Math.min(80,40+b2bCount*8); // B2Bが続くほど長く
+    if(b2bCount<3)return; // B2B3以上から発動
+    this._lightningTimer=Math.min(80,40+b2bCount*8);
     this._b2bIntensity=Math.min(1,0.4+b2bCount*0.12);
+    // 稲妻ボルトを枠の各辺からスポーン
+    const sc2=this._uiScale||1;
+    const bx=this.mainBX,by=this.mainBY;
+    const bw=BOARD_W*sc2,bh=BOARD_H*sc2;
+    const color=b2bCount>=8?0x0088ff:0x00ff88;
+    const intensity=Math.min(1.5,0.6+b2bCount*0.1);
+    const numBolts=b2bCount>=8?6:b2bCount>=5?4:2;
+    const branches=b2bCount>=8?3:2;
+    for(let i=0;i<numBolts;i++){
+      // 4辺からランダムに選択してボルトを外向きに発射
+      const side=Math.floor(Math.random()*4);
+      let sx,sy,angle;
+      if(side===0){sx=bx+Math.random()*bw;sy=by;angle=-Math.PI/2+(Math.random()-0.5)*0.8;}     // 上→上
+      else if(side===1){sx=bx+Math.random()*bw;sy=by+bh;angle=Math.PI/2+(Math.random()-0.5)*0.8;} // 下→下
+      else if(side===2){sx=bx;sy=by+Math.random()*bh;angle=Math.PI+(Math.random()-0.5)*0.8;}      // 左→左
+      else{sx=bx+bw;sy=by+Math.random()*bh;angle=0+(Math.random()-0.5)*0.8;}                      // 右→右
+      this._spawnLightningBolt(sx,sy,angle,color,intensity,branches);
+    }
   }
 
   _drawLightning(dt){
@@ -2375,27 +2596,28 @@ class GameRenderer{
       this._lightningTimer-=dt;
       const g=this.lightningGfx;g.clear();
       const intensity=this._b2bIntensity||0.7;
-      // B2Bが多いほど色が変わる: 黄→シアン→白
       const b2b=this._b2bCount||1;
-      const lCol=b2b>=5?0xffffff:b2b>=3?0x00f5ff:0xffbe0b;
+      // B2B3以上=緑, B2B8以上=青, breakFlash=白
+      const lCol=this._lightningBreakFlash?0xffffff:b2b>=8?0x0088ff:b2b>=3?0x00ff88:0xffbe0b;
       g.alpha=intensity*(0.6+0.4*Math.random());
-      // 枠の4辺それぞれに雷
       const bw=BOARD_W,bh=BOARD_H;
-      const segs=6+Math.floor(b2b*1.5); // セグメント数
-      const amp=3+b2b*1.2; // 振れ幅
+      const segs=6+Math.floor(b2b*1.5);
+      const amp=3+b2b*1.2;
       const lw=1+Math.min(b2b*0.4,2.5);
       g.lineStyle(lw,lCol,0.9);
-      // 上辺
       this._drawZigzag(g,0,0,bw,0,segs,amp,'h');
-      // 下辺
       this._drawZigzag(g,0,bh,bw,bh,segs,amp,'h');
-      // 左辺
       this._drawZigzag(g,0,0,0,bh,segs,amp,'v');
-      // 右辺
       this._drawZigzag(g,bw,0,bw,bh,segs,amp,'v');
-      // B2B 5以上: 追加の内側フラッシュ
-      if(b2b>=5){
-        g.lineStyle(lw*0.6,0xffffff,0.4*Math.random());
+      // B2B8以上: 内側にも追加ライン
+      if(b2b>=8){
+        g.lineStyle(lw*0.7,0x44bbff,0.5*Math.random());
+        this._drawZigzag(g,4,4,bw-4,4,segs,amp*0.5,'h');
+        this._drawZigzag(g,4,4,4,bh-4,segs,amp*0.5,'v');
+        this._drawZigzag(g,bw-4,4,bw-4,bh-4,segs,amp*0.5,'v');
+        this._drawZigzag(g,4,bh-4,bw-4,bh-4,segs,amp*0.5,'h');
+      } else if(b2b>=3){
+        g.lineStyle(lw*0.5,0x88ffcc,0.35*Math.random());
         this._drawZigzag(g,4,4,bw-4,4,segs,amp*0.5,'h');
       }
     } else {
@@ -2493,6 +2715,7 @@ class GameRenderer{
   }
 
   _startGameOverCollapse(){
+    this._b2bCount=0;this.updateB2bBadge();
     const wrap=this.boardWrap;
     wrap.visible=false;
     // 枠を独立したContainerとして斜め落下させる
@@ -2783,11 +3006,39 @@ class GameRenderer{
     }
     if(this._flashAlpha>0){this._flashAlpha-=0.06;this.flashGfx.alpha=Math.max(0,this._flashAlpha);}
 
+    // B2Bバッジ パンチ＆グリッチアニメーション
+    if(this.b2bBadgeCont&&this.b2bBadgeCont.visible){
+      // パンチ: 数字がスケールアップ→戻る
+      if(this._b2bPunching){
+        this._b2bPunchTime=(this._b2bPunchTime||0)+dt;
+        const t=Math.min(this._b2bPunchTime/120,1);
+        // ease-out: 1→1.6→1
+        const scale= t<0.4 ? 1+1.5*t : 1+1.5*(1-t)*0.67;
+        this.b2bBadgeNum.scale.set(Math.max(1,scale));
+        if(t>=1){this._b2bPunching=false;this.b2bBadgeNum.scale.set(1);}
+      }
+      // グリッチ
+      if(this._b2bGlitchTime>0){
+        this._b2bGlitchTime-=dt;
+        const intensity=Math.min(1,this._b2bGlitchTime/180);
+        // ランダムオフセット揺れ
+        const jx=(Math.random()-0.5)*4*intensity;
+        const jy=(Math.random()-0.5)*2*intensity;
+        this.b2bBadgeNum.x=28+jx;
+        // 背景グリッチ再描画
+        if(Math.random()<0.4) this._drawB2bBadgeBg(this._b2bBadgeColor||0xffbe0b,intensity);
+        if(this._b2bGlitchTime<=0){
+          this.b2bBadgeNum.x=28;
+          this._drawB2bBadgeBg(this._b2bBadgeColor||0xffbe0b,0);
+        }
+      }
+    }
     // B2B 雷エフェクト更新
     this._drawLightning(dt);
 
     // 塊チャンク（_lightningBolts にまとめて格納）
     this._lightningBolts=this._lightningBolts.filter(p=>{
+      if(p.isBolt){p.life-=p.decay;p.gfx.alpha=Math.max(0,p.life);if(p.life<=0){try{p.gfx.destroy();}catch(e){}return false;}return true;}
       if(!p.isChunk)return false;
       p.life-=p.decay;p.gfx.alpha=p.life;
       p.gfx.x+=p.vx;p.gfx.y+=p.vy;p.vy+=0.35;p.gfx.rotation+=p.rot;
@@ -3275,6 +3526,7 @@ function handleKeyDown(e){
     case 'ArrowRight':gameState.move(1);_dasStartedAt=performance.now();startDAS(1);break;
     case 'ArrowUp':case 'KeyX':gameState.rotate(1);break;
     case 'KeyZ':gameState.rotate(-1);break;
+    case 'KeyA':gameState.rotate180();break;
     case 'ArrowDown':startSoftDrop();break;
     case 'Space':e.preventDefault();gameState.hardDrop();break;
     case 'ShiftLeft':case 'ShiftRight':case 'KeyC':gameState.hold();break;
