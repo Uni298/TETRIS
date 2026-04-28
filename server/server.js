@@ -236,8 +236,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   score += linePts[Math.min(linesCleared, 4)] || 0;
   // Extra bonus for clearing when stack is dangerous
   if (linesCleared > 0 && maxH > 10) score += linesCleared * (maxH - 10) * 40;
-  if (spinType === 'TSPIN')      score += linesCleared===3 ? 4000 : linesCleared===2 ? 2600 : 900;
-  if (spinType === 'MINI_TSPIN') score += 120;
+  // T-spin score bonuses removed from bot evaluator
   if (isB2B)   score += 700;
   if (combo>0) score += 70 * combo;
   if ((ren||0) >= 2) score += (ren||0) * 120;
@@ -306,8 +305,8 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
     if (wellCount >= 2) score -= (wellCount - 1) * 300;
   }
 
-  // T-spin setup reward (only when stack is manageable)
-  if (maxH <= 12) score += evaluateTspinSetup(board, heights);
+  // T-spin setup reward removed for BOT
+  if (maxH <= 12) score += 0; // T-spin setup bonus disabled
 
   // Variance penalty (flat is good)
   const variance = heights.reduce((a,h)=>a+Math.pow(h-avgH,2),0) / COLS;
@@ -492,9 +491,9 @@ function findPCSequence(board, pieces, timeLimitMs=25) {
   // Only on very low boards
   const maxRow = board.reduce((m, row, i) => row.some(c => c !== 0) ? i : m, -1);
   const occupiedHeight = maxRow === -1 ? 0 : ROWS + HIDDEN - maxRow;
-  if (occupiedHeight > 4) return null;
+  if (occupiedHeight > 6) return null;
 
-  const limit = Math.min(pieces.length, 5);
+  const limit = Math.min(pieces.length, 8);
   // Feasibility: filled + n*4 must be divisible by 10 for some n ≤ limit
   let feasible = false;
   for (let n = 1; n <= limit; n++) {
@@ -524,7 +523,7 @@ function findPCSequence(board, pieces, timeLimitMs=25) {
       for (let r = 0; r < ROWS + HIDDEN; r++)
         if (p.board[r].some(c => c !== 0)) { highestFilled = r; break; }
       const newH = highestFilled === -1 ? 0 : ROWS + HIDDEN - highestFilled;
-      if (newH > 4) continue;
+      if (newH > 6) continue;
       // Prune: check feasibility of remaining pieces
       let newFilled = 0;
       for (let r = 0; r < ROWS + HIDDEN; r++)
@@ -594,9 +593,7 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
 
   function addBonuses(p) {
     let b = 0;
-    if (p.spin === 'TSPIN' && p.lines >= 2) b += 1200 * p.lines;
-    if (p.spin === 'TSPIN' && p.lines === 3) b += 2000;
-    if (p.spin === 'TSPIN' && p.lines === 1) b += 500;
+    // T-spin bonuses removed from bot
     if (p.lines === 4) b += 800;
     if (p.board && p.board.every(row => row.every(c => c === 0))) b += 50000 + pcBonus;
     // Garbage priority: heavily reward any line clear when garbage is threatening
@@ -698,19 +695,19 @@ class BotPlayer {
     if (!this.alive || !this.currentPiece) { if(onDone)onDone(); return; }
 
     // PC hunt mode: try to find a perfect clear sequence
-    if (this.pcHuntMode && this.pcPiecesPlaced < 14) {
+    if (this.pcHuntMode && this.pcPiecesPlaced < 22) {
       const occupiedRows = this.board.filter(row => row.some(c => c !== 0)).length;
-      if (occupiedRows <= 4) {
+      if (occupiedRows <= 6) {
         // Build piece list: current + hold (if any) interleaved + next queue
-        const piecesNoHold = [this.currentPiece.type, ...this.nextQueue.slice(0, 5)];
+        const piecesNoHold = [this.currentPiece.type, ...this.nextQueue.slice(0, 7)];
         const piecesWithHold = this.holdPiece
-          ? [this.holdPiece, this.currentPiece.type, ...this.nextQueue.slice(0, 4)]
+          ? [this.holdPiece, this.currentPiece.type, ...this.nextQueue.slice(0, 6)]
           : null;
 
-        let pcSeq = findPCSequence(this.board, piecesNoHold, 25);
+        let pcSeq = findPCSequence(this.board, piecesNoHold, 60);
         let useHoldFirst = false;
         if (!pcSeq && piecesWithHold) {
-          pcSeq = findPCSequence(this.board, piecesWithHold, 20);
+          pcSeq = findPCSequence(this.board, piecesWithHold, 40);
           if (pcSeq) useHoldFirst = true;
         }
 
@@ -730,7 +727,7 @@ class BotPlayer {
     }
 
     // Normal AI
-    const pcBonus = (this.pcHuntMode && this.pcPiecesPlaced < 10) ? 20000 : 0;
+    const pcBonus = (this.pcHuntMode && this.pcPiecesPlaced < 18) ? 25000 : 0;
 
     let placement = botChoosePlacement(
       this.board, this.currentPiece.type,
@@ -916,7 +913,7 @@ class BotPlayer {
     if (this.lastPlacements.length > 5) this.lastPlacements.shift();
     this.pcPiecesPlaced++;
     // If board is not clean after 12 pieces, stop PC hunt
-    if (this.pcPiecesPlaced > 12) this.pcHuntMode = false;
+    if (this.pcPiecesPlaced > 20) this.pcHuntMode = false;
 
     const now = Date.now();
     const armed = this.garbageQueue.filter(g => g.readyAt <= now);

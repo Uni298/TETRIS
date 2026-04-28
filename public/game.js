@@ -876,12 +876,10 @@ class TetrisGame{
     this.current={type,rotation:0,x:3,y:SPAWN_Y,customShape};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
     if(renderer)renderer._wallBumpActive=false;
-    // ゲームオーバー判定: スポーン位置が既存ブロックと重なったら即死
-    // ただし lockPiece→clearLines→spawnPiece の流れの中では
-    // clearLines後に呼ばれるため、ここでの重複はゲームオーバー
+    // ゲームオーバー判定: スポーン位置が既存ブロックと重なったら
+    // すぐには終わらず、一度設置させてから判定する
     if(!this.isValid(this.current)){
-      this.alive=false;
-      // CLUTCHチャンスがあったかどうかはclearLines側で処理済み
+      this._pendingGameOver=true;
     }
   }
 
@@ -1056,6 +1054,9 @@ class TetrisGame{
   lockPiece(){
     if(this.locking)return;
     this.locking=true;this.cancelLock();
+    // pendingGameOver: piece was placed in blocked position
+    const hadPendingGO=this._pendingGameOver;
+    this._pendingGameOver=false;
     const shape=this._getShapeForPiece(this.current);
     const wasSpin=!!this.lastSpin,spinType=this.lastSpinType;
     this._lockX=this.current.x;this._lockY=this.current.y;this._lockType=this.current.type;
@@ -1120,16 +1121,20 @@ class TetrisGame{
         const sub=Math.min(armed[i].lines,cancel);armed[i].lines-=sub;cancel-=sub;
       }
       const remaining=armed.filter(g=>g.lines>0);
-      if(remaining.length>0){
+      // コンボ中（ren>=1）はゴミを適用しない
+      if(remaining.length>0&&this.ren<1){
         const groups=groupByBatch(remaining);
         for(const grp of groups){
           const holeCol=grp[0].holeCol!==undefined?grp[0].holeCol:Math.floor(Math.random()*COLS);
           for(const chunk of grp){
             const col=chunk.holeCol!==undefined?chunk.holeCol:holeCol;
-            for(let i=0;i<chunk.lines;i++){const row=Array(COLS).fill('G');row[col]=0;this.board.push(row);this.board.shift();}
+            for(let i=0;i<chunk.lines;i++){const row=Array(COLS).fill('G');row[col]=0;this.board.push(row);this.board.shift();if(this.current)this.current.y=Math.max(0,this.current.y-1);}
           }
         }
         SFX.garbage();renderer&&renderer.onGarbageApplied(remaining.reduce((a,b)=>a+b.lines,0));
+      } else if(remaining.length>0){
+        // コンボ中は相殺されなかったゴミをキューに戻す
+        for(const g of remaining)this.garbageQueue.unshift(g);
       }
 
       // 180°スピン: ライン消去が1枚以上あった場合のみスピン有効（傾きなし）
@@ -1199,10 +1204,11 @@ class TetrisGame{
       // 相手にRENリセットを通知
       socket.emit('line_clear_effect',{count:0,spinType:null,isB2B:false,ren:0,allClear:false});
       // ガベージ即時適用（ラインなし時）
+      // コンボ中（combo>=1）はゴミを盤面に反映しない
       const now=performance.now();
       const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
       this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
-      if(armed.length){
+      if(armed.length&&this.combo<1){
         const total=armed.reduce((a,b)=>a+b.lines,0);
         if(total>0){
           // 同じ穴のものをセットで0.1秒ごとにアニメーション付きで追加
@@ -1229,13 +1235,17 @@ class TetrisGame{
     this._lockedInDanger=false;
     this.spawnPiece();
     // CLUTCH判定: 危機状態からのライン消しで生き残った場合
-    if(wasInDanger&&this.alive){
+    if(wasInDanger&&this.alive&&!this._pendingGameOver){
       renderer&&renderer.onClutch();
     }
     this._emitBoardUpdate();
     // Shogi mode: notify server that human placed a piece
     if(shogiMode)socket.emit('shogi_human_placed');
-    if(!this.alive){socket.emit('game_over');renderer&&renderer.onGameOver();}
+    // ゲームオーバー判定: pendingGameOverまたはスポーン失敗
+    if(!this.alive||this._pendingGameOver){
+      this.alive=false;this._pendingGameOver=false;
+      socket.emit('game_over');renderer&&renderer.onGameOver();
+    }
   }
 
   // おじゃまミノ: 同じ穴のものをセットで、0.1秒ごとにグループを追加 + 振動
@@ -1260,7 +1270,7 @@ class TetrisGame{
     const applyGroup=()=>{
       if(idx>=groupRows.length)return;
       const rows=groupRows[idx];
-      for(const row of rows){this.board.push(row);this.board.shift();}
+      for(const row of rows){this.board.push(row);this.board.shift();if(this.current)this.current.y=Math.max(0,this.current.y-1);}
       idx++;
       if(renderer){
         renderer.onGarbageRowAdded(rows.length); // まとめて振動
@@ -1874,6 +1884,60 @@ class GameRenderer{
     }
   }
 
+  _drawDangerWarning(){
+    // ゲームオーバーになりうるゴミが来ている場合に警告を表示
+    if(!this.gs||!this.gs.garbageQueue)return;
+    const now=performance.now();
+    // 積み上がりの最高行
+    let topRow=this.gs.board.length;
+    for(let r=0;r<this.gs.board.length;r++){
+      if(this.gs.board[r].some(c=>c)){topRow=r;break;}
+    }
+    const stackHeight=this.gs.board.length-topRow;
+    const available=this.gs.board.length-stackHeight; // 空き行数（概算）
+    // 発動条件: readyになっているゴミの合計が空き行を超える
+    const readyGarbage=this.gs.garbageQueue
+      .filter(g=>g.readyAt<=now+500)
+      .reduce((a,b)=>a+b.lines,0);
+    // visible rowsより多い => 確実に死ぬ
+    const visibleRows=20; // ROWS
+    const willKill=readyGarbage>0&&(stackHeight+readyGarbage>=visibleRows);
+    if(!this._warnEl){
+      this._warnEl=document.createElement('div');
+      this._warnEl.style.cssText='position:absolute;pointer-events:none;z-index:500;display:none;';
+      // 三角の！マーク
+      this._warnEl.innerHTML='<svg width="28" height="26" viewBox="0 0 28 26"><polygon points="14,2 26,24 2,24" fill="rgba(255,60,0,0.85)" stroke="#ff3300" stroke-width="1.5"/><text x="14" y="21" text-anchor="middle" font-size="14" font-weight="900" fill="white" font-family="sans-serif">!</text></svg>';
+      // B2BバッジコンテナのDOMを探してその下に配置
+      // PixiJSのcanvas containerに追加
+      const pc=document.getElementById('pixi-container');
+      if(pc)pc.style.position='relative';
+      if(pc)pc.appendChild(this._warnEl);
+    }
+    if(willKill){
+      // b2bBadgeCont の位置を参照して配置
+      const sc=this._uiScale||1;
+      const wx=this.mainBX-90;
+      // b2bBadgeCont.y に相当する位置 (holdの下、b2bの下あたり)
+      const wy=this.mainBY+(settings.uiLayout?.sideUiOffsetY||0)+130;
+      const canvas=this.app.view;
+      const rect=canvas.getBoundingClientRect();
+      const ratioX=rect.width/this.app.screen.width;
+      const ratioY=rect.height/this.app.screen.height;
+      const pc=document.getElementById('pixi-container');
+      const pcRect=pc?pc.getBoundingClientRect():{left:0,top:0};
+      const sx=rect.left-pcRect.left+wx*ratioX;
+      const sy=rect.top-pcRect.top+wy*ratioY;
+      this._warnEl.style.left=Math.round(sx)+'px';
+      this._warnEl.style.top=Math.round(sy)+'px';
+      this._warnEl.style.display='block';
+      // 点滅
+      const pulse=0.5+0.5*Math.abs(Math.sin(performance.now()*0.006));
+      this._warnEl.style.opacity=String(0.6+0.4*pulse);
+    } else {
+      this._warnEl.style.display='none';
+    }
+  }
+
   drawGarbageMeter(){
     const g=this.gMeterGfx;g.clear();
     const queue=this.gs.garbageQueue;if(!queue.length){this._prevReadyCount=0;return;}
@@ -2109,7 +2173,7 @@ class GameRenderer{
       const gs=this.gs;const gy=gs.ghostY();
       const shape=gs._getShapeForPiece(gs.current);
       const col=PIECE_COLORS[gs.current.type]||0xffffff;
-      // Hard drop sparkle for ALL pieces (like T-spin sparkle but piece color)
+      // Hard drop sparkle
       for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
         if(!shape[r][c])continue;
         const dr=gy+r-HIDDEN;if(dr<0)continue;
@@ -2137,6 +2201,65 @@ class GameRenderer{
           for(let i=0;i<6;i++)this.spawnParticle(px,py,col,true);
         }
       }
+      // ガラスキラっエフェクト: ミノの各マスに短命な十字光線を走らせる
+      if(settings.quality!=='minimum'){
+        this._spawnGlassGlint(gs.current,shape,gy,col);
+      }
+    }
+  }
+
+  // ガラスのキラっ光: ミノの各マス内にクリップされた斜め図形でスライドしながら消える
+  _spawnGlassGlint(piece,shape,ghostY,col){
+    const S=CELL;
+    // ミノの各マスに対して、マス内にクリップされた反射図形を生成
+    for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
+      if(!shape[r][c])continue;
+      const dr=ghostY+r-HIDDEN;if(dr<0)continue;
+      const px=this.mainBX+(piece.x+c)*CELL;
+      const py=this.mainBY+dr*CELL;
+
+      // コンテナ＋マスクでセル内にクリップ
+      const cont=new PIXI.Container();
+      cont.x=px;cont.y=py;
+
+      // クリップ用マスク（セルのサイズ）
+      const mask=new PIXI.Graphics();
+      mask.beginFill(0xffffff,1);
+      mask.drawRect(1,1,S-2,S-2);
+      mask.endFill();
+      cont.addChild(mask);
+      cont.mask=mask;
+
+      const streak=new PIXI.Graphics();
+      // 斜め菱形状の光沢図形 (parallelogram): 左上から右下に向かう太めの帯
+      const numStripes=settings.particles==='high'?3:2;
+      for(let i=0;i<numStripes;i++){
+        const t=(i+0.5)/numStripes; // 0.17, 0.5, 0.83
+        const xCenter=S*t;
+        const halfW=S*0.12; // 帯の太さ (半幅)
+        const skew=S*0.55; // 斜め具合 (右にどれだけズレるか)
+        // 平行四辺形: 4点
+        // 上辺(xCenter-skew/2 ± halfW, 0) → 下辺(xCenter+skew/2 ± halfW, S)
+        const x0=xCenter-skew/2-halfW, x1=xCenter-skew/2+halfW;
+        const x2=xCenter+skew/2+halfW, x3=xCenter+skew/2-halfW;
+        const alpha=i===Math.floor(numStripes/2)?0.65:0.35;
+        streak.beginFill(0xffffff,alpha);
+        streak.moveTo(x0,0);streak.lineTo(x1,0);
+        streak.lineTo(x2,S);streak.lineTo(x3,S);
+        streak.closePath();streak.endFill();
+      }
+      // 小さな色付き三角アクセント（左上）
+      streak.beginFill(col,0.35);
+      streak.moveTo(2,2);streak.lineTo(S*0.4,2);streak.lineTo(2,S*0.4);
+      streak.closePath();streak.endFill();
+
+      cont.addChild(streak);
+      this.effectsLayer.addChild(cont);
+
+      // スライドしながら右下にフェードアウト
+      const vx=0.7+Math.random()*0.5;
+      const vy=0.5+Math.random()*0.4;
+      this.particles.push({gfx:cont,vx,vy,life:1.0,decay:0.09+Math.random()*0.03});
     }
   }
 
@@ -2233,13 +2356,14 @@ class GameRenderer{
     el.style.cssText=`
       position:fixed;top:${Math.round(this.H*0.08)}px;left:50%;
       transform:translateX(-50%) scaleX(1);
-      font-family:Orbitron,sans-serif;font-size:clamp(2rem,5vw,4rem);
-      font-weight:900;color:#ff006e;
-      text-shadow:0 0 30px #ff006e,0 0 60px #ff440088,0 0 8px #fff;
-      letter-spacing:0.2em;
+      font-family:Orbitron,sans-serif;font-size:clamp(0.7rem,1.8vw,1.4rem);
+      font-weight:300;color:#ffffff;
+      text-shadow:0 0 8px rgba(255,255,255,0.4);
+      letter-spacing:0.25em;
       pointer-events:none;z-index:9999;
       white-space:nowrap;
       transition:none;
+      opacity:0.75;
     `;
     document.body.appendChild(el);
     this._clutchEl=el;
@@ -2368,14 +2492,14 @@ class GameRenderer{
 
   onLineClear(cleared,count,spinType,isB2B,combo,ren,allClear,attack){
     this.flashGfx.clear();this._flashAlpha=1;
-    // T-SPIN DOUBLE/TRIPLE は色付きフラッシュ
     const isTDouble=spinType==='TSPIN'&&count===2;
     const isTTriple=spinType==='TSPIN'&&count===3;
     const isAnySpin=!!spinType&&count>=1;
-    // スピン種別に応じた色（T=紫系, I=水色, S/Z/L/J/180=ピース色 or 白）
-    const spinColors={'TSPIN':0xcc44ff,'MINI_TSPIN':0xcc44ff,'ISPIN':0x00f5ff,'SSPIN':0x00e000,'ZSPIN':0xff3300,'LSPIN':0xff8800,'JSPIN':0x0088ff,'SPIN180':0xffffff};
-    const spinChunkColor=spinColors[spinType]||0xffffff;
-    const flashColor=isTTriple?0xff00ff:isTDouble?0xcc44ff:isAnySpin?(spinColors[spinType]||0xffffff):allClear?0xffff00:0xffffff;
+    // スピン色: ミノの色に合わせる
+    const spinPieceMap={'TSPIN':'T','MINI_TSPIN':'T','ISPIN':'I','SSPIN':'S','ZSPIN':'Z','LSPIN':'L','JSPIN':'J','SPIN180':null};
+    const spinPiece=spinType?spinPieceMap[spinType]:null;
+    const spinChunkColor=spinPiece?PIECE_COLORS[spinPiece]:0xffffff;
+    const flashColor=isAnySpin?spinChunkColor:allClear?0xffff00:0xffffff;
     cleared.forEach(r=>{const dr=r-HIDDEN;if(dr<0)return;this.flashGfx.beginFill(flashColor,0.9);this.flashGfx.drawRect(0,dr*CELL,BOARD_W,CELL);this.flashGfx.endFill();});
     if(settings.shake==='on')this.shakePower=Math.min(16,count*3+(spinType?5:0)+(allClear?12:0));
     if(count>=4||allClear)this.boardOffsetY=Math.max(this.boardOffsetY,24);
@@ -2392,7 +2516,7 @@ class GameRenderer{
           const col=PIECE_COLORS[this.gs.board[r]?.[c]]||0xffffff;
           for(let i=0;i<n;i++)this.spawnParticle(this.mainBX+c*CELL+CELL/2,this.mainBY+dr*CELL+CELL/2,col);
         }
-        for(let i=0;i<25;i++)this.spawnParticle(this.mainBX+BOARD_W/2,this.mainBY+dr*CELL+CELL/2,0xffffff,false,true);
+        for(let i=0;i<12;i++)this.spawnParticle(this.mainBX+BOARD_W/2,this.mainBY+dr*CELL+CELL/2,0xffffff,false,true);
       });
       // テトリス（4ライン消し）: 枠から破片が飛び出す演出（無効化済み）
       // スピン系: チャンクエフェクト（T以外も含む）
@@ -2430,7 +2554,7 @@ class GameRenderer{
     if(isB2B&&lbl)lbl='B2B '+lbl;
     if(ren>2)lbl+=(lbl?' │ ':'')+`REN ${ren}`;
     if(lbl){
-      const col=allClear?0xffff44:isB2B?0xffbe0b:isTTriple?0xff00ff:isTDouble?0xcc44ff:spinType?0xff44ff:0x00f5ff;
+      const col=allClear?0xffff44:isB2B?0xffbe0b:spinChunkColor||0x00f5ff;
       this.floatLabels.push(new FloatLabel(this.app,lx,ly,lbl,col,false));ly+=38;
     }
     if(combo>0){
@@ -3612,6 +3736,7 @@ class GameRenderer{
     this.updateBoardAnim(dt);
     this.opponentPlayers.forEach(p=>{this.drawOpponentBoard(p.id);this._updateOpponentSmoke(p.id,dt);this.drawOpponentGarbageMeter(p.id);});
     this.drawGarbageMeter();
+    this._drawDangerWarning();
     this.updateParticlesEtc(dt);
     // ULTRA: animated scanline
     if(settings.quality==='ultra'&&this._bgScanline){
