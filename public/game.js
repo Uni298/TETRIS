@@ -876,8 +876,13 @@ class TetrisGame{
     this.current={type,rotation:0,x:3,y:SPAWN_Y,customShape};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
     if(renderer)renderer._wallBumpActive=false;
-    // ゲームオーバー: スポーン位置が既存ブロックと重なったら
-    if(!this.isValid(this.current)){this.alive=false;}
+    // ゲームオーバー判定: スポーン位置が既存ブロックと重なったら即死
+    // ただし lockPiece→clearLines→spawnPiece の流れの中では
+    // clearLines後に呼ばれるため、ここでの重複はゲームオーバー
+    if(!this.isValid(this.current)){
+      this.alive=false;
+      // CLUTCHチャンスがあったかどうかはclearLines側で処理済み
+    }
   }
 
   getShape(type,rot,customShape){
@@ -1058,6 +1063,15 @@ class TetrisGame{
     // T-spin afterimage: スピン回転時に既にトリガー済みのため、ここでは不要
     // Snapshot board state BEFORE placement for training data
     this._boardBefore=roomSettings.recordTraining?this.board.map(r=>r.map(c=>c||0)):null;
+    // ロック前にゲームオーバーライン(HIDDEN行)を超えているか記録
+    // ただし打つ行為自体は許可する（clearLines後にspawnで判定）
+    let lockedInDanger=false;
+    for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
+      if(!shape[r][c])continue;
+      const ny=this.current.y+r;
+      if(ny<HIDDEN)lockedInDanger=true;
+    }
+    this._lockedInDanger=lockedInDanger;
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
       const ny=this.current.y+r,nx=this.current.x+c;
@@ -1099,7 +1113,8 @@ class TetrisGame{
       const now=performance.now();
       const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
       this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
-      let cancel=count;
+      // B2B継続中は相殺ミノを2倍にする
+      let cancel=isB2B ? count*2 : count;
       for(let i=0;i<armed.length&&cancel>0;i++){
         const sub=Math.min(armed[i].lines,cancel);armed[i].lines-=sub;cancel-=sub;
       }
@@ -1123,8 +1138,21 @@ class TetrisGame{
       // 5-line clear (mutation mode): always B2B-eligible, not counted in standard B2B chain
       const isPenta=count===5;
       const isB2B=this.b2b&&(count===4||isPenta||(isSpin&&!isMini));
+      // B2B解除チェック: B2B継続中なのに今回はB2B条件を満たさない場合
+      const wasB2B=this.b2b;
+      const prevB2bCount=this.b2bCount;
       if(count===4||isPenta||(isSpin&&!isMini)){if(this.b2b){this.b2bCount++;SFX.b2b();}this.b2b=true;}
-      else{this.b2bCount=0;this.b2b=false;}
+      else{
+        // B2B解除: カウント/2 切り捨て段を相手に送る
+        if(wasB2B&&prevB2bCount>=2){
+          const bonusAtk=Math.floor(prevB2bCount/2);
+          if(bonusAtk>0){
+            socket.emit('lines_cleared',{attack:bonusAtk,allClear:false,spinType:'B2B_BREAK',clearRows:[]});
+            renderer&&renderer.onB2bBreakAttack(bonusAtk,prevB2bCount);
+          }
+        }
+        this.b2bCount=0;this.b2b=false;
+      }
 
       const pts=this.calcScore(count,isTSpin,isMini,isB2B,this.combo);
       this.score+=pts;this.lines+=count;this.level=Math.floor(this.lines/10)+1;
@@ -1194,7 +1222,13 @@ class TetrisGame{
         });
       }catch(err){console.warn('[record] piece_placed error',err);}
     }
+    const wasInDanger=this._lockedInDanger;
+    this._lockedInDanger=false;
     this.spawnPiece();
+    // CLUTCH判定: 危機状態からのライン消しで生き残った場合
+    if(wasInDanger&&this.alive){
+      renderer&&renderer.onClutch();
+    }
     this._emitBoardUpdate();
     // Shogi mode: notify server that human placed a piece
     if(shogiMode)socket.emit('shogi_human_placed');
@@ -2188,6 +2222,141 @@ class GameRenderer{
 
   endComboLabel(){if(this.comboLabel){this.comboLabel.end();this.comboLabel=null;}}
 
+  // CLUTCHエフェクト: 画面上部に横に伸びながら消えるテキスト
+  onClutch(){
+    if(this._clutchEl)try{this._clutchEl.remove();}catch(e){}
+    const el=document.createElement('div');
+    el.textContent='CLUTCH';
+    el.style.cssText=`
+      position:fixed;top:${Math.round(this.H*0.08)}px;left:50%;
+      transform:translateX(-50%) scaleX(1);
+      font-family:Orbitron,sans-serif;font-size:clamp(2rem,5vw,4rem);
+      font-weight:900;color:#ff006e;
+      text-shadow:0 0 30px #ff006e,0 0 60px #ff440088,0 0 8px #fff;
+      letter-spacing:0.2em;
+      pointer-events:none;z-index:9999;
+      white-space:nowrap;
+      transition:none;
+    `;
+    document.body.appendChild(el);
+    this._clutchEl=el;
+    SFX.allClear&&SFX.allClear();
+    // アニメーション: 0.2秒で通常サイズ → 1秒間キープ → 0.4秒で横伸び＋消滅
+    requestAnimationFrame(()=>{
+      el.style.transition='transform 0.18s cubic-bezier(0.17,0.67,0.35,1.4), opacity 0.18s';
+      el.style.transform='translateX(-50%) scaleX(1.05) scaleY(1.08)';
+      el.style.opacity='1';
+      setTimeout(()=>{
+        el.style.transition='transform 0.7s cubic-bezier(0.4,0,1,1), opacity 0.5s ease-in 0.2s';
+        el.style.transform='translateX(-50%) scaleX(4) scaleY(0.3)';
+        el.style.opacity='0';
+        setTimeout(()=>{try{el.remove();}catch(e){}if(this._clutchEl===el)this._clutchEl=null;},900);
+      },900);
+    });
+    // シェイクもかける
+    if(settings.shake==='on')this.shakePower=Math.max(this.shakePower,20);
+  }
+
+  // B2B解除時のボーナス攻撃エフェクト: 白い塊が分裂して相手に飛ぶ
+  onB2bBreakAttack(bonusAtk,b2bCount){
+    if(settings.particles==='off')return;
+    // 発射元: ボードの中央上
+    const sx=this.mainBX+BOARD_W/2;
+    const sy=this.mainBY+BOARD_H*0.2;
+    // 相手のガベージメーターに向かって飛ぶ
+    const targets=this._getOpponentTargets();
+    for(const {tx,ty} of targets){
+      for(let i=0;i<bonusAtk;i++){
+        setTimeout(()=>{
+          this._spawnB2bBreakBolt(sx,sy,tx,ty,i,bonusAtk);
+        },i*80);
+      }
+    }
+    // 自分のボード上に白い爆発
+    for(let i=0;i<16;i++){
+      const g=new PIXI.Graphics();
+      const sz=Math.random()*8+4;
+      g.beginFill(0xffffff,0.9);g.drawCircle(0,0,sz);g.endFill();
+      g.x=sx+(Math.random()-0.5)*BOARD_W*0.6;
+      g.y=sy+(Math.random()-0.5)*BOARD_H*0.3;
+      this.effectsLayer.addChild(g);
+      const a=Math.random()*Math.PI*2;
+      const sp=Math.random()*8+3;
+      this.particles.push({gfx:g,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp-4,life:1,decay:0.018+Math.random()*0.012,rot:(Math.random()-0.5)*0.15});
+    }
+    // フラッシュ
+    this._flashAlpha=0.6;
+    this.flashGfx.clear();
+    this.flashGfx.beginFill(0xffffff,0.6);
+    this.flashGfx.drawRect(0,0,BOARD_W,BOARD_H);
+    this.flashGfx.endFill();
+  }
+
+  _getOpponentTargets(){
+    const targets=[];
+    for(const pid of Object.keys(this.opBoardData)){
+      const d=this.opBoardData[pid];
+      if(d&&d.cont&&d.cont.visible){
+        // ガベージメーターの位置（ボードの左端 + 上部）
+        targets.push({tx:d.cont.x+(d.bw||0)*0.5,ty:d.cont.y+(d.bh||0)*0.3});
+      }
+    }
+    // ターゲットがなければ画面右端
+    if(!targets.length)targets.push({tx:this.W*0.85,ty:this.H*0.3});
+    return targets;
+  }
+
+  _spawnB2bBreakBolt(sx,sy,tx,ty,idx,total){
+    const cont=new PIXI.Container();
+    cont.x=sx;cont.y=sy;
+    this.projLayer.addChild(cont);
+    // 白い球
+    const g=new PIXI.Graphics();
+    const r=10+Math.random()*6;
+    g.beginFill(0xffffff,1);g.drawCircle(0,0,r);g.endFill();
+    g.beginFill(0xaaddff,0.7);g.drawCircle(0,0,r*0.6);g.endFill();
+    cont.addChild(g);
+    // カーブ軌道: 中間点をランダムに曲げる
+    const mx=(sx+tx)/2+(Math.random()-0.5)*200;
+    const my=(sy+ty)/2+(Math.random()-0.5)*200-100;
+    const frames=40+Math.floor(Math.random()*20);
+    let f=0;
+    const trail=[];
+    const ticker=()=>{
+      f++;
+      const t=f/frames;
+      // ベジエ曲線 (二次)
+      const bx=(1-t)*(1-t)*sx+2*(1-t)*t*mx+t*t*tx;
+      const by=(1-t)*(1-t)*sy+2*(1-t)*t*my+t*t*ty;
+      cont.x=bx;cont.y=by;
+      cont.rotation+=0.25;
+      // トレイル
+      if(f%2===0&&settings.particles!=='off'){
+        const tg=new PIXI.Graphics();
+        tg.beginFill(0xffffff,0.4*(1-t));tg.drawCircle(0,0,r*0.5*(1-t*0.5));tg.endFill();
+        tg.x=bx;tg.y=by;
+        this.effectsLayer.addChild(tg);
+        this.particles.push({gfx:tg,vx:0,vy:0,life:0.4*(1-t),decay:0.06});
+      }
+      if(f>=frames){
+        // 着弾爆発
+        for(let i=0;i<10;i++){
+          const eg=new PIXI.Graphics();
+          eg.beginFill(0xffffff,0.9);eg.drawCircle(0,0,Math.random()*5+2);eg.endFill();
+          eg.x=tx;eg.y=ty;
+          this.effectsLayer.addChild(eg);
+          const ea=Math.random()*Math.PI*2;
+          const esp=Math.random()*6+2;
+          this.particles.push({gfx:eg,vx:Math.cos(ea)*esp,vy:Math.sin(ea)*esp-2,life:0.8,decay:0.04+Math.random()*0.03});
+        }
+        try{cont.destroy({children:true});}catch(e){}
+        this.app.ticker.remove(ticker);
+        return;
+      }
+    };
+    this.app.ticker.add(ticker);
+  }
+
   _getClearRowsCenterY(cleared){
     if(!cleared||!cleared.length)return this.mainBY+BOARD_H*0.5;
     const avgRow=cleared.reduce((a,b)=>a+b,0)/cleared.length;
@@ -2235,7 +2404,7 @@ class GameRenderer{
       this._b2bCount=(this._b2bCount||0)+1;
       this._triggerLightning(this._b2bCount);
       this._punchB2bBadge(); // カウント更新エフェクト
-    } else if(!isB2B&&!spinType&&count<4){
+    } else {
       if(this._b2bCount>=1) this._breakB2bLightning(); // B2B途切れ白稲妻
       this._b2bCount=0;
     }
