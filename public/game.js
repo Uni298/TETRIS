@@ -1113,8 +1113,9 @@ class TetrisGame{
       const now=performance.now();
       const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
       this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
-      // B2B継続中は相殺ミノを2倍にする
-      let cancel=isB2B ? count*2 : count;
+      // B2B判定はこの後に行うため、ここではまず通常キャンセル数を仮置き
+      // (isB2B確定後に再計算)
+      let cancel=count; // 仮: isB2B確定後に更新
       for(let i=0;i<armed.length&&cancel>0;i++){
         const sub=Math.min(armed[i].lines,cancel);armed[i].lines-=sub;cancel-=sub;
       }
@@ -1138,6 +1139,8 @@ class TetrisGame{
       // 5-line clear (mutation mode): always B2B-eligible, not counted in standard B2B chain
       const isPenta=count===5;
       const isB2B=this.b2b&&(count===4||isPenta||(isSpin&&!isMini));
+      // B2B継続中は相殺ミノを2倍にする（isB2B確定後に更新）
+      if(isB2B) cancel=count*2;
       // B2B解除チェック: B2B継続中なのに今回はB2B条件を満たさない場合
       const wasB2B=this.b2b;
       const prevB2bCount=this.b2bCount;
