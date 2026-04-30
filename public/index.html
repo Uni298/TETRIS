@@ -536,6 +536,36 @@
     from { transform: scale(0.4); opacity: 0; }
     to   { transform: scale(1);   opacity: 1; }
   }
+  #allspin-timer-panel {
+    position: absolute;
+    top: 12px;
+    left: 16px;
+    background: rgba(3,7,18,0.95);
+    border: 1px solid rgba(0,245,255,0.4);
+    border-radius: 8px;
+    padding: 0.4rem 0.8rem;
+    text-align: center;
+    pointer-events: none;
+    min-width: 64px;
+    box-shadow: 0 0 12px rgba(0,245,255,0.2);
+  }
+  .as-timer-lbl {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.55rem;
+    color: rgba(0,245,255,0.6);
+    letter-spacing: 0.2em;
+  }
+  #allspin-timer {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 2rem;
+    font-weight: 900;
+    color: #00f5ff;
+    line-height: 1;
+  }
+  @keyframes timerPulse {
+    0%,100% { transform: scale(1); }
+    50%      { transform: scale(1.15); }
+  }
   #allspin-score-panel {
     position: absolute;
     top: 12px;
@@ -546,24 +576,30 @@
     padding: 0.5rem 0.9rem;
     text-align: center;
     pointer-events: none;
-    min-width: 90px;
+    min-width: 100px;
   }
   #allspin-score-panel .as-score-lbl {
-    font-size: 0.6rem;
+    font-size: 0.55rem;
     color: rgba(204,0,255,0.6);
     font-family: 'Orbitron', sans-serif;
     letter-spacing: 0.15em;
   }
+  #allspin-score-val {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 900;
+    color: #ffbe0b;
+  }
   #allspin-solved-count {
     font-family: 'Orbitron', sans-serif;
-    font-size: 1.4rem;
+    font-size: 1.3rem;
     font-weight: 900;
     color: #cc00ff;
   }
   #allspin-streak {
     font-size: 0.68rem;
     color: rgba(255,190,11,0.7);
-    margin-top: 0.15rem;
+    margin-top: 0.1rem;
   }
 
   /* MUTATION TOGGLE in waiting room */
@@ -1069,19 +1105,29 @@
   </div>
 </div>
 
-<!-- ALLSPIN MODE OVERLAY -->
+<!-- BIG BANG MODE OVERLAY -->
 <div id="allspin-overlay">
+  <!-- タイマー（上中央） -->
+  <div id="allspin-timer-panel">
+    <div class="as-timer-lbl">TIME</div>
+    <div id="allspin-timer">60</div>
+  </div>
+  <!-- お題パネル（上中央） -->
   <div id="allspin-problem-panel">
-    <div class="as-title">🌀 ALLSPIN CHALLENGE</div>
+    <div class="as-title">🌀 BIG BANG</div>
     <div id="allspin-spin-target" style="color:#cc00ff">T-SPIN DOUBLE</div>
     <div id="allspin-hint">Tミノをスピンさせてラインを消そう</div>
-    <div id="allspin-progress">問題 1 / ∞</div>
+    <div id="allspin-progress">#1</div>
   </div>
+  <!-- スコアパネル（右上） -->
   <div id="allspin-score-panel">
-    <div class="as-score-lbl">SOLVED</div>
+    <div class="as-score-lbl">SCORE</div>
+    <div id="allspin-score-val">0</div>
+    <div class="as-score-lbl" style="margin-top:0.4rem">SPINS</div>
     <div id="allspin-solved-count">0</div>
-    <div id="allspin-streak">🔥 0 streak</div>
+    <div id="allspin-streak">🔥 0</div>
   </div>
+  <!-- スピン成功フラッシュ -->
   <div id="allspin-cleared-flash">
     <div class="flash-text" id="allspin-flash-text" style="color:#cc00ff">NICE!</div>
   </div>

@@ -208,19 +208,31 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
     }
   }
 
-  // ── Overhang detection (blocks floating over empty space) ───────
-  // Penalty for any filled cell that has empty space directly below it
+  // ── Overhang / ceiling detection ────────────────────────────────
+  // Count cells that create a "roof" over empty space.
+  // A column creates a roof when it is significantly taller than its neighbour
+  // AND the shorter neighbour has empty space that is now covered.
+  // We measure two things:
+  //   overhangs : filled cells that hang directly over at least one empty cell in the same col
+  //   ceilScore : how deeply a column overhangs its neighbours (the tunnel depth)
   let overhangs = 0;
-  for (let r = 1; r < ROWS+HIDDEN; r++) {
-    for (let c = 0; c < COLS; c++) {
-      if (board[r-1][c] !== 0 && board[r][c] === 0) {
-        // Check if there's a hole below
-        let hasHoleBelow = false;
-        for (let rr = r; rr < ROWS+HIDDEN; rr++) {
-          if (board[rr][c] === 0) { hasHoleBelow = true; break; }
-          else break;
-        }
-        if (hasHoleBelow) overhangs++;
+  let ceilScore = 0;
+  for (let c = 0; c < COLS; c++) {
+    let inBlock = false;
+    let hangDepth = 0;
+    for (let r = 0; r < ROWS+HIDDEN; r++) {
+      if (board[r][c]) { inBlock = true; hangDepth = 0; }
+      else if (inBlock) { hangDepth++; overhangs++; }
+    }
+    // Ceiling over neighbours: how much this column sticks up above each neighbour
+    // and whether the neighbour has open space below that height
+    for (const nc of [c-1, c+1]) {
+      if (nc < 0 || nc >= COLS) continue;
+      const diff = heights[c] - heights[nc];
+      if (diff >= 2) {
+        // Column c is "diff" rows taller than neighbour nc — creates a ceiling
+        // The deeper the ceiling the harder it is to slide a piece under
+        ceilScore += diff * diff;
       }
     }
   }
@@ -232,14 +244,20 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   let score = 0;
 
   // ── Line clear bonuses ─────────────────────────────────────────
-  const linePts = [0, 50, 250, 600, 1800];
+  const linePts = [0, 50, 250, 700, 3500]; // テトリス(4)を最大に強化
   score += linePts[Math.min(linesCleared, 4)] || 0;
+  // テトリス強力ボーナス
+  if (linesCleared === 4) score += 2500;
   // Extra bonus for clearing when stack is dangerous
   if (linesCleared > 0 && maxH > 10) score += linesCleared * (maxH - 10) * 40;
-  // T-spin score bonuses removed from bot evaluator
-  if (isB2B)   score += 700;
-  if (combo>0) score += 70 * combo;
-  if ((ren||0) >= 2) score += (ren||0) * 120;
+  // B2B tetris bonus
+  if (isB2B && linesCleared === 4) score += 900;
+  // REN/コンボボーナス（強化）
+  if (combo>0) score += 120 * combo;
+  const renVal = ren||0;
+  if (renVal >= 1) score += renVal * 200;   // REN継続は非常に価値が高い
+  if (renVal >= 3) score += renVal * 150;   // 3REN以上は追加ボーナス
+  if (renVal >= 6) score += renVal * 200;   // 6REN以上はさらに
   if (linesCleared > 0 && board.every(r=>r.every(c=>c===0))) score += 15000;
 
   // ── Garbage clearing bonus ─────────────────────────────────────
@@ -249,11 +267,12 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   }
 
   // ── Penalties ─────────────────────────────────────────────────
-  score -= holes        * 180.0;  // very strong hole penalty (increased from 100)
-  score -= coveredDepth * 20.0;   // increased from 15
-  score -= floorGaps    * 35.0;   // floor gaps: empty space at bottom of column
-  score -= overhangs    * 30.0;   // overhang penalty
-  score -= bumpiness    * 4.0;
+  score -= holes        * 180.0;  // very strong hole penalty
+  score -= coveredDepth * 20.0;
+  score -= floorGaps    * 35.0;   // floor gaps
+  score -= overhangs    * 60.0;   // overhang: doubled (each covered empty cell hurts)
+  score -= ceilScore    * 15.0;   // ceiling-over-neighbour: penalise tall spikes that block slides
+  score -= bumpiness    * 8.0;    // flat stacks preferred
   score -= sumH         * 1.5;
 
   // ── Garbage stack penalty ──────────────────────────────────────
@@ -271,13 +290,29 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   // ── I-piece gap penalty ────────────────────────────────────────
   // Penalize having 2+ consecutive columns that are both significantly
   // lower than their neighbors (forms a shaft that blocks I placement)
+  // Also heavily penalize 3+ wide open columns (I-piece can't fill all at once)
   for (let c = 0; c < COLS - 1; c++) {
     const leftWall  = c > 0        ? heights[c-1] : heights[c] + 4;
     const rightWall = c < COLS - 2 ? heights[c+2] : heights[c+1] + 4;
     const shaftDepth = Math.min(leftWall, rightWall) - Math.max(heights[c], heights[c+1]);
     if (shaftDepth >= 3) {
       // A 2-wide shaft of depth >= 3 could trap an I-piece
-      score -= shaftDepth * 60;
+      score -= shaftDepth * 120; // increased penalty
+    }
+  }
+  // ── 3-wide (or wider) open column run penalty ─────────────────
+  // Detect runs of 3+ consecutive columns that are all much lower than
+  // the tallest column — this creates a wide pit an I-piece cannot fill.
+  for (let c = 0; c < COLS - 2; c++) {
+    const leftWall  = c > 0        ? heights[c-1] : heights[c] + 6;
+    const rightWall = c < COLS - 3 ? heights[c+3] : heights[c+2] + 6;
+    const pitMin = Math.min(heights[c], heights[c+1], heights[c+2]);
+    const wallMin = Math.min(leftWall, rightWall);
+    const pitDepth = wallMin - pitMin;
+    if (pitDepth >= 3) {
+      // 3-wide pit: I-piece (horizontal) can land but leaves gaps.
+      // Penalise hard so bot avoids creating this shape.
+      score -= pitDepth * pitDepth * 40;
     }
   }
   if (maxH > 16) score -= (maxH - 16) * 700;
@@ -285,6 +320,8 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   if (maxH > 20) score -= (maxH - 20) * 5000;
 
   // ── Well: only reward when stack is LOW ────────────────────────
+  // Only 1-wide wells are ideal (for I-piece tetris).
+  // Penalise multiple wells heavily, and penalise wells wider than 1.
   if (maxH <= 8) {
     let wellCount = 0;
     let bestWellCol = -1, bestWellDepth = 0;
@@ -302,11 +339,10 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
       const edgeMult = edgeDist === 0 ? 1.5 : edgeDist === 1 ? 0.8 : 0.2;
       score += Math.min(bestWellDepth, 6) * 14 * edgeMult;
     }
-    if (wellCount >= 2) score -= (wellCount - 1) * 300;
+    if (wellCount >= 2) score -= (wellCount - 1) * 800; // stronger multi-well penalty
   }
 
-  // T-spin setup reward removed for BOT
-  if (maxH <= 12) score += 0; // T-spin setup bonus disabled
+  // (T-spin setup bonus removed)
 
   // Variance penalty (flat is good)
   const variance = heights.reduce((a,h)=>a+Math.pow(h-avgH,2),0) / COLS;
@@ -328,27 +364,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   return score;
 }
 
-// T-spin setup evaluation (looks for actual TSD-ready slots)
-function evaluateTspinSetup(board, heights) {
-  let bonus = 0;
-  for (let c = 1; c < COLS-1; c++) {
-    const lh = heights[c-1], ch = heights[c], rh = heights[c+1];
-    const ld = lh - ch, rd = rh - ch;
-    if (ld >= 2 && rd >= 2 && ch >= 2) {
-      bonus += 80;
-      const bRow = ROWS+HIDDEN - ch;
-      if (bRow >= 0 && bRow < ROWS+HIDDEN) {
-        const hasL = c > 0      && board[bRow] && board[bRow][c-1];
-        const hasR = c < COLS-1 && board[bRow] && board[bRow][c+1];
-        if (hasL && hasR) bonus += 180;
-        else if (hasL || hasR) bonus += 80;
-      }
-    } else if ((ld >= 2 && rd >= 1) || (ld >= 1 && rd >= 2)) {
-      bonus += 25;
-    }
-  }
-  return Math.min(bonus, 400);
-}
+// T-spin setup evaluation removed (BOT does not aim for T-spins)
 
 // SRS wall kick tables
 const SRS_KICKS = {
@@ -406,19 +422,7 @@ function getAllPlacementsFast(board, type) {
   for (let rot = 0; rot < 4; rot++) {
     for (let x = -2; x < COLS + 2; x++) add(rot, x);
   }
-  // T-spin wall kicks: try each kick offset too
-  if (type === 'T') {
-    for (let fromRot = 0; fromRot < 4; fromRot++) {
-      for (const dir of [1, -1]) {
-        const toRot = ((fromRot + dir) % 4 + 4) % 4;
-        const key2 = `${fromRot}->${toRot}`;
-        const kicks = SRS_KICKS['default'][key2] || [];
-        for (const [kx] of kicks) {
-          for (let x = -2; x < COLS + 2; x++) add(toRot, x + kx);
-        }
-      }
-    }
-  }
+  // (T-spin kick search removed — BOT targets tetris/REN instead)
   return results;
 }
 
@@ -437,12 +441,39 @@ function getAllPlacementsBFS(board, type) {
     queue.push({ rot, x, y });
   };
 
-  // Compute direct-drop positions (for needsSoftDrop flag)
+  // Compute positions reachable without soft-drop:
+  // BFS from spawn along y=0 row only (rotate + slide at top, then hard-drop).
+  // Any placement not reachable this way truly needs soft-drop routing.
   const directDrop = new Set();
-  for (let rot = 0; rot < 4; rot++) {
-    for (let x = -2; x < COLS + 2; x++) {
-      if (!isValid(board, type, rot, x, 0)) continue;
-      directDrop.add(`${rot},${x},${hardDropY(board, type, rot, x, 0)}`);
+  {
+    const topVisited = new Set();
+    const topQueue = [];
+    const topEnqueue = (r, tx) => {
+      const k = `${r},${tx}`;
+      if (topVisited.has(k)) return;
+      if (!isValid(board, type, r, tx, 0)) return;
+      topVisited.add(k);
+      topQueue.push({ rot: r, x: tx });
+    };
+    for (let r = 0; r < 4; r++)
+      for (let tx = -2; tx < COLS+2; tx++) topEnqueue(r, tx);
+    let tqi = 0;
+    while (tqi < topQueue.length) {
+      const { rot: r, x: tx } = topQueue[tqi++];
+      // slide left/right at y=0
+      if (isValid(board, type, r, tx-1, 0)) topEnqueue(r, tx-1);
+      if (isValid(board, type, r, tx+1, 0)) topEnqueue(r, tx+1);
+      // rotate at y=0
+      for (const dir of [1,-1]) {
+        const res = tryRotate(board, type, r, tx, 0, dir);
+        if (res && res.y === 0) topEnqueue(res.rot, res.x);
+      }
+    }
+    // All positions reachable at y=0 can be hard-dropped directly
+    for (const k of topVisited) {
+      const [r, tx] = k.split(',').map(Number);
+      const dy = hardDropY(board, type, r, tx, 0);
+      directDrop.add(`${r},${tx},${dy}`);
     }
   }
 
@@ -565,12 +596,14 @@ function findPCSequence(board, pieces, timeLimitMs = 80) {
         return;
       }
 
-      // 積極的剪定1: 高さが4行超えたら打ち切り
+      // 積極的剪定1: 高さ制限（残りミノ数に応じて緩和）
       const h = getMaxH(p.board);
-      if (h > 8) continue;
+      const maxAllowedH = Math.min(4 + rest.length * 2, 10);
+      if (h > maxAllowedH) continue;
 
-      // 積極的剪定2: 穴が多すぎたら打ち切り（PC不可）
-      if (countHoles(p.board) > 3) continue;
+      // 積極的剪定2: 穴が多すぎたら打ち切り（残りミノ数に応じて緩和）
+      const maxHoles = Math.min(2 + Math.floor(rest.length / 2), 6);
+      if (countHoles(p.board) > maxHoles) continue;
 
       // 積極的剪定3: 残りミノで到達可能か
       let newFilled = 0;
@@ -600,17 +633,20 @@ function evaluatePC4Fitness(board, heights) {
   const maxH = Math.max(...heights);
   const minH = Math.min(...heights);
 
-  // 4行以下ならPCボーナス
-  if (maxH <= 4) score += 2000;
-  else if (maxH <= 6) score += 800;
-  else if (maxH <= 8) score += 200;
+  // 4行以下ならPCボーナス（大幅強化）
+  if (maxH <= 4) score += 8000;
+  else if (maxH <= 6) score += 4000;
+  else if (maxH <= 8) score += 1500;
+  else if (maxH <= 10) score += 400;
 
   // フラットな盤面を強く評価
   const bumpiness = heights.reduce((a, h, i) => i > 0 ? a + Math.abs(h - heights[i-1]) : a, 0);
-  if (bumpiness <= 2) score += 500;
-  else if (bumpiness <= 4) score += 200;
+  if (bumpiness === 0) score += 3000; // 完全フラット
+  else if (bumpiness <= 2) score += 1500;
+  else if (bumpiness <= 4) score += 600;
+  else score -= bumpiness * 200;
 
-  // 穴がゼロなら大ボーナス
+  // 穴がゼロなら大ボーナス（穴があるとPCできない）
   let holes = 0;
   for (let c = 0; c < COLS; c++) {
     let hasBlock = false;
@@ -619,8 +655,18 @@ function evaluatePC4Fitness(board, heights) {
       else if (hasBlock) holes++;
     }
   }
-  if (holes === 0) score += 1000;
-  else score -= holes * 500;
+  if (holes === 0) score += 5000;
+  else score -= holes * 2000; // 穴は致命的
+
+  // 埋まっているセルが10の倍数に近いほどPCしやすい
+  let filled = 0;
+  for (let r = 0; r < ROWS + HIDDEN; r++)
+    for (let c = 0; c < COLS; c++)
+      if (board[r][c]) filled++;
+  const rem = filled % 10;
+  // 0, 4, 8(=2ミノ先), 6(=1.5ミノ), ... を評価
+  const remBonus = [5000, 0, 0, 0, 2000, 0, 1000, 0, 2000, 0];
+  score += (remBonus[rem] || 0);
 
   return score;
 }
@@ -659,14 +705,14 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
     // Beam pruning
     const scored = pl.map(p => {
       const newR = p.lines > 0 ? r + 1 : 0;
-      const iB2B2 = isB2B && (p.lines===4||(p.spin==='TSPIN'&&p.lines>0));
+      const iB2B2 = isB2B && p.lines === 4;
       const nc = cmb+(p.lines>0?1:0);
-      return { p, sc: evaluateBoard(p.board, p.lines, p.spin, iB2B2, nc, level, newR) + addBonuses(p) };
+      return { p, sc: evaluateBoard(p.board, p.lines, null, iB2B2, nc, level, newR) + addBonuses(p) };
     }).sort((a, b2) => b2.sc - a.sc).slice(0, beamWidth);
     let best = -Infinity;
     for (const { p, sc } of scored) {
       const newR = p.lines > 0 ? r + 1 : 0;
-      const iB2B2 = isB2B && (p.lines===4||(p.spin==='TSPIN'&&p.lines>0));
+      const iB2B2 = isB2B && p.lines === 4;
       const nc = cmb+(p.lines>0?1:0);
       const fut = d > 1 ? evalDeep(p.board, pieces.slice(1), d-1, iB2B2, nc, newR) * 0.6 : 0;
       if (sc + fut > best) best = sc + fut;
@@ -676,28 +722,64 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
 
   function addBonuses(p) {
     let b = 0;
-    if (p.lines === 4) b += 800;
 
-    // PC達成ボーナス
+    // PC達成ボーナス（最優先）
     if (p.board && p.board.every(row => row.every(c => c === 0))) {
-      b += 80000 + pcBonus; // PCは最優先
+      b += 80000 + pcBonus;
       return b;
     }
 
-    // PC-friendly: pcBonusが大きいとき（pcHuntMode）は
-    // 盤面を低く・フラットに保つことを強く報酬
+    // テトリスボーナス（強化）
+    if (p.lines === 4) b += 2000;
+
+    // PC-friendly評価
     if (pcBonus > 0 && p.board) {
       const ph = [];
       for (let c = 0; c < COLS; c++) {
+        let found = false;
         for (let r = 0; r < ROWS + HIDDEN; r++) {
-          if (p.board[r][c]) { ph.push(ROWS + HIDDEN - r); break; }
-          if (r === ROWS + HIDDEN - 1) ph.push(0);
+          if (p.board[r][c]) { ph.push(ROWS + HIDDEN - r); found = true; break; }
         }
+        if (!found) ph.push(0);
       }
-      b += evaluatePC4Fitness(p.board, ph) * (pcBonus / 60000);
+      b += evaluatePC4Fitness(p.board, ph) * (pcBonus / 120000);
     }
 
-    // Garbage priority: heavily reward any line clear when garbage is threatening
+    // REN継続ボーナス: このplacements後もラインが消えるか予測
+    if (p.lines > 0 && p.board) {
+      // 次のNEXTで消せそうな行があれば加点（REN期待値）
+      const curRen = (ren||0) + 1;
+      b += curRen * 300; // RENの長さに比例したボーナス
+      // 着地後の盤面がREN継続しやすいかチェック（完全行に近い行）
+      let nearFullRows = 0;
+      for (let r = 0; r < ROWS+HIDDEN; r++) {
+        const filled = p.board[r].filter(c=>c!==0).length;
+        if (filled >= 8) nearFullRows++; // 8/10以上埋まっている行
+      }
+      b += nearFullRows * 200; // REN継続しやすい盤面を評価
+    }
+
+    // Wellを維持してIピースでテトリスしやすくする評価
+    if (p.board && p.lines === 0) {
+      // 1列だけ空いたwell（端または端近く）があればボーナス
+      const ph2 = [];
+      for (let c = 0; c < COLS; c++) {
+        let found = false;
+        for (let r = 0; r < ROWS + HIDDEN; r++) {
+          if (p.board[r][c]) { ph2.push(ROWS + HIDDEN - r); found = true; break; }
+        }
+        if (!found) ph2.push(0);
+      }
+      for (let c = 0; c < COLS; c++) {
+        const lh = c > 0 ? ph2[c-1] : ph2[c]+6;
+        const rh = c < COLS-1 ? ph2[c+1] : ph2[c]+6;
+        const depth = Math.min(lh - ph2[c], rh - ph2[c]);
+        if (depth >= 4 && (c === 0 || c === COLS-1)) b += 400; // 端のwellは理想的
+        else if (depth >= 4) b += 150;
+      }
+    }
+
+    // Garbage priority
     if (garbagePriority && p.lines > 0) {
       b += p.lines * garbageRowCount * 200;
       if (p.lines >= 2) b += 500;
@@ -716,11 +798,10 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
     let bestScore = -Infinity, bestPlacement = null;
     for (const p of placements) {
       const newRen = p.lines > 0 ? (ren||0) + 1 : 0;
-      const iB2B = b2b && (p.lines===4||(p.spin==='TSPIN'&&p.lines>0));
+      const iB2B = b2b && p.lines === 4; // B2BはTetrisのみ
       const nc = combo + (p.lines > 0 ? 1 : 0);
-      let sc = evaluateBoard(p.board, p.lines, p.spin, iB2B, nc, level, newRen);
+      let sc = evaluateBoard(p.board, p.lines, null, iB2B, nc, level, newRen);
       sc += addBonuses(p);
-      if ((ren||0) >= 2 && p.lines > 0) sc += (ren||0) * 180;
       if (depth >= 2 && nextTypes.length > 0)
         sc += evalDeep(p.board, nextTypes, depth-1, iB2B, nc, newRen) * 0.6;
       // Add per-placement jitter so the bot doesn't always pick identically
@@ -743,9 +824,9 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
     let bestScoreA = -Infinity, bestPA = null;
     for (const p of placementsNext) {
       const newRen = p.lines > 0 ? (ren||0) + 1 : 0;
-      const iB2B = b2b && (p.lines===4||(p.spin==='TSPIN'&&p.lines>0));
+      const iB2B = b2b && p.lines === 4;
       const nc = combo + (p.lines > 0 ? 1 : 0);
-      let sc = evaluateBoard(p.board, p.lines, p.spin, iB2B, nc, level, newRen);
+      let sc = evaluateBoard(p.board, p.lines, null, iB2B, nc, level, newRen);
       sc += addBonuses(p);
       if (depth >= 2 && nextTypes.length > 1)
         sc += evalDeep(p.board, nextTypes.slice(1), depth-1, iB2B, nc, newRen) * 0.6;
@@ -804,20 +885,26 @@ class BotPlayer {
   // PCソルバーを試行し、手順を返す（なければnull）
   _tryFindPC(timeLimitMs) {
     const h = this._boardHeight();
-    if (h > 8) return null; // 8行超は諦める
+    if (h > 10) return null; // 10行超は諦める（緩和）
 
-    // 現ピース + hold + next でピース列を作る
     const cur = this.currentPiece.type;
     const next = this.nextQueue.slice(0, 9);
+    const tPer = timeLimitMs / (this.holdPiece ? 3 : 2);
 
     // パターン1: current → next
-    let seq = findPCSequence(this.board, [cur, ...next], timeLimitMs * 0.6);
+    let seq = findPCSequence(this.board, [cur, ...next], tPer);
     if (seq) return { seq, holdFirst: false };
 
     // パターン2: hold → current → next
     if (this.holdPiece) {
-      seq = findPCSequence(this.board, [this.holdPiece, cur, ...next.slice(0, 8)], timeLimitMs * 0.4);
+      seq = findPCSequence(this.board, [this.holdPiece, cur, ...next.slice(0, 8)], tPer);
       if (seq) return { seq, holdFirst: true };
+    }
+
+    // パターン3: holdなしのときはnext[0]をhold候補として current → next[1..] を探す
+    if (!this.holdPiece && next.length > 0) {
+      seq = findPCSequence(this.board, [next[0], cur, ...next.slice(1, 8)], tPer);
+      if (seq) return { seq, holdFirst: true, holdPrefetch: next[0] };
     }
 
     return null;
@@ -827,19 +914,29 @@ class BotPlayer {
     if (!this.alive || !this.currentPiece) { if(onDone)onDone(); return; }
 
     // ── PC HUNT MODE ─────────────────────────────────────────────
-    // 連続失敗が多すぎる場合は一時的に通常AIに切り替え
-    const pcActive = this.pcHuntMode && this.pcFailed < 8;
+    // 連続失敗が多すぎる場合は一時的に通常AIに切り替え（16回まで粘る）
+    const pcActive = this.pcHuntMode && this.pcFailed < 16;
 
     if (pcActive) {
-      const result = this._tryFindPC(100);
+      const result = this._tryFindPC(200); // 時間を100→200msに増加
 
       if (result && result.seq.length > 0) {
         this.pcFailed = 0; // 解が見つかったのでリセット
         const first = result.seq[0];
 
-        // holdFirstの場合: holdを先に使う
-        if (result.holdFirst && !this.holdPiece) {
-          // holdがない状態でholdFirst→通常フォールバック
+        // holdPrefetch: holdがない状態でnext[0]をholdしてからcurrentを置くケース
+        if (result.holdPrefetch && !this.holdPiece) {
+          // まずcurrentをholdしてspawnし、next[0]がholdに入った状態にする
+          // 実際にはexecutePlacementでuseHold=trueにすると内部でholdへ
+          // → ここではfirst(=next[0])をholdして、currentを通常配置する
+          const bfsPlacements = getAllPlacementsBFS(this.board, this.currentPiece.type);
+          const placement = bfsPlacements.find(p => p.rot === first.rot && p.x === first.x);
+          if (placement) {
+            this.executePlacement({ ...placement, useHold: false }, onDone);
+            return;
+          }
+        } else if (result.holdFirst && !this.holdPiece) {
+          // holdがない状態でholdFirst→通常フォールバック（従来通り）
         } else {
           const useType = result.holdFirst ? this.holdPiece : first.type;
           const needHold = result.holdFirst || first.type !== this.currentPiece.type;
@@ -859,8 +956,8 @@ class BotPlayer {
     // ── NORMAL AI (PC-FRIENDLY評価) ──────────────────────────────
     // pcHuntModeのときはPC-friendly評価を混ぜる
     const h = this._boardHeight();
-    // 4行以下なら強いPCボーナスを与える
-    const pcBonus = pcActive ? (h <= 4 ? 60000 : h <= 6 ? 30000 : h <= 8 ? 10000 : 0) : 0;
+    // PC-friendlyボーナスを大幅強化
+    const pcBonus = pcActive ? (h <= 4 ? 120000 : h <= 6 ? 60000 : h <= 8 ? 20000 : h <= 10 ? 5000 : 0) : 0;
 
     let placement = botChoosePlacement(
       this.board, this.currentPiece.type,
@@ -907,6 +1004,7 @@ class BotPlayer {
     // Decide: soft drop needed? (piece can't be reached by pure hard drop from spawn)
     const directY = hardDropY(this.board, type, rot, x, 0);
     // Check if target rot/x is reachable from (rot=0, x=3) without soft drop
+    // Always use placement.needsSoftDrop; _animatePlacement will double-check anyway
     const needsSoftDrop = placement.needsSoftDrop || false;
 
     this._animatePlacement(type, rot, x, targetY, needsSoftDrop, () => {
@@ -915,20 +1013,25 @@ class BotPlayer {
     });
   }
 
-  // Animated movement with BFS path (uses soft drop only when needed)
+  // Animated movement:
+  //   needsSoftDrop=false → direct path (rotate+slide at top, instant hard-drop)
+  //   needsSoftDrop=true  → Dijkstra BFS path (slides under ceilings / through gaps)
   _animatePlacement(type, rot, x, targetY, needsSoftDrop, done) {
     let path;
-    // Always try BFS first to ensure we find a valid path
-    // _buildDirectPath can get stuck if the board is tall
+    if (!needsSoftDrop) {
+      path = this._buildDirectPath(type, rot, x, targetY);
+      // Sanity check: if direct path doesn't reach target, fall back to BFS
+      const last = path[path.length - 1];
+      if (!last || last.x !== x || last.rot !== rot || last.y !== targetY) {
+        needsSoftDrop = true;
+      }
+    }
     if (needsSoftDrop) {
       path = this._findPath(type, rot, x, targetY);
-    } else {
-      path = this._buildDirectPath(type, rot, x, targetY);
-      // Verify the direct path actually lands at the right place
-      // If last step doesn't match target, fall back to BFS
-      const last = path[path.length - 1];
-      if (!last || last.x !== x || last.rot !== rot) {
-        path = this._findPath(type, rot, x, targetY);
+      // Ultimate fallback
+      const last = path && path[path.length - 1];
+      if (!last || last.x !== x || last.rot !== rot || last.y !== targetY) {
+        path = this._buildDirectPath(type, rot, x, targetY);
       }
     }
 
@@ -954,12 +1057,15 @@ class BotPlayer {
   }
 
   // Direct path (hard drop): rotate at top, slide, drop
+  // Returns steps ending at the correct (rot, x, targetY).
+  // If the piece can't reach x at y=0 (obstacle in the way), returns an
+  // incomplete path so _animatePlacement falls back to BFS.
   _buildDirectPath(type, rot, x, targetY) {
     const board = this.board;
     const steps = [];
     let cr = 0, cx = 3;
 
-    // Rotate
+    // Rotate at spawn row
     const rotSteps = rot <= 2 ? rot : 4 - rot;
     const rotDir   = rot <= 2 ? 1 : -1;
     for (let i = 0; i < rotSteps; i++) {
@@ -968,51 +1074,106 @@ class BotPlayer {
       steps.push({ rot: cr, x: cx, y: 0 });
     }
 
-    // Slide horizontally
+    // Slide horizontally at y=0
     while (cx !== x) {
       const dir = cx < x ? 1 : -1;
-      if (isValid(board, type, cr, cx+dir, 0)) cx += dir;
-      else break;
+      if (isValid(board, type, cr, cx + dir, 0)) cx += dir;
+      else break; // blocked — do NOT hard-drop at wrong x; caller will use BFS
       steps.push({ rot: cr, x: cx, y: 0 });
     }
 
-    // Hard drop (instant — show final position)
-    steps.push({ rot: cr, x: cx, y: targetY });
+    // Only append hard-drop step if we actually reached the target column and rotation
+    if (cx === x && cr === rot) {
+      steps.push({ rot: cr, x: cx, y: targetY });
+    }
+    // Otherwise return partial path — _animatePlacement will detect mismatch and use BFS
     return steps;
   }
 
-  // BFS path (soft drop): navigate through gaps
+  // BFS path: finds the true reachable path including through overhangs and tunnels.
+  // Uses a priority queue (min-heap by cost) so horizontal moves at the same height
+  // are preferred over dropping early — this naturally produces "slide under ceiling"
+  // paths that mirror how a skilled human would place a piece.
   _findPath(type, targetRot, targetX, targetY) {
     const board = this.board;
     const targetKey = `${targetRot},${targetX},${targetY}`;
 
-    const visited = new Map();
-    const queue = [{ rot: 0, x: 3, y: 0 }];
-    visited.set('0,3,0', null);
-
-    let qi = 0, found = false;
-    outer: while (qi < queue.length) {
-      const { rot, x, y } = queue[qi++];
-      const curKey = `${rot},${x},${y}`;
-
-      for (const [dx, dy] of [[-1,0],[1,0],[0,1]]) {
-        const nx = x+dx, ny = y+dy;
-        const nk = `${rot},${nx},${ny}`;
-        if (!visited.has(nk) && isValid(board, type, rot, nx, ny)) {
-          visited.set(nk, curKey);
-          if (nk === targetKey) { found = true; break outer; }
-          queue.push({ rot, x: nx, y: ny });
+    // Priority queue (simple array-based min-heap by cost)
+    // cost = drops * 10 + rotations * 3 + lateral moves * 1
+    // This prefers sliding sideways at height before dropping.
+    const heap = [];
+    const heapPush = (node) => {
+      heap.push(node);
+      let i = heap.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (heap[p].cost <= heap[i].cost) break;
+        [heap[p], heap[i]] = [heap[i], heap[p]]; i = p;
+      }
+    };
+    const heapPop = () => {
+      const top = heap[0];
+      const last = heap.pop();
+      if (heap.length > 0) {
+        heap[0] = last;
+        let i = 0;
+        while (true) {
+          const l = i*2+1, r = i*2+2;
+          let s = i;
+          if (l < heap.length && heap[l].cost < heap[s].cost) s = l;
+          if (r < heap.length && heap[r].cost < heap[s].cost) s = r;
+          if (s === i) break;
+          [heap[i], heap[s]] = [heap[s], heap[i]]; i = s;
         }
       }
+      return top;
+    };
+
+    const visited = new Map(); // key -> parentKey
+    const costMap = new Map(); // key -> best cost so far
+
+    const startKey = '0,3,0';
+    visited.set(startKey, null);
+    costMap.set(startKey, 0);
+    heapPush({ rot: 0, x: 3, y: 0, cost: 0, key: startKey });
+
+    // Dijkstra: expand states until we reach target
+    let found = false;
+    outer: while (heap.length > 0) {
+      const { rot, x, y, cost, key: curKey } = heapPop();
+      if (curKey === targetKey) { found = true; break outer; }
+      if (costMap.has(curKey) && costMap.get(curKey) < cost) continue; // stale
+
+      // Moves: left(-1), right(+1), soft-drop(+1 row) — no upward movement
+      // Lateral moves are cheap so the path prefers sliding at height before dropping
+      const moves = [
+        { dx: -1, dy: 0, dc: 1 },  // slide left
+        { dx:  1, dy: 0, dc: 1 },  // slide right
+        { dx:  0, dy: 1, dc: 10 }, // soft drop (expensive → slide first)
+      ];
+      for (const { dx, dy, dc } of moves) {
+        const nx = x+dx, ny = y+dy;
+        if (!isValid(board, type, rot, nx, ny)) continue;
+        const nk = `${rot},${nx},${ny}`;
+        const nc = cost + dc;
+        if (!costMap.has(nk) || costMap.get(nk) > nc) {
+          costMap.set(nk, nc);
+          visited.set(nk, curKey);
+          heapPush({ rot, x: nx, y: ny, cost: nc, key: nk });
+          if (nk === targetKey) break outer;
+        }
+      }
+      // Rotations (CW and CCW)
       for (const dir of [1, -1]) {
         const res = tryRotate(board, type, rot, x, y, dir);
-        if (res) {
-          const nk = `${res.rot},${res.x},${res.y}`;
-          if (!visited.has(nk)) {
-            visited.set(nk, curKey);
-            if (nk === targetKey) { found = true; break outer; }
-            queue.push({ rot: res.rot, x: res.x, y: res.y });
-          }
+        if (!res) continue;
+        const nk = `${res.rot},${res.x},${res.y}`;
+        const nc = cost + 3;
+        if (!costMap.has(nk) || costMap.get(nk) > nc) {
+          costMap.set(nk, nc);
+          visited.set(nk, curKey);
+          heapPush({ rot: res.rot, x: res.x, y: res.y, cost: nc, key: nk });
+          if (nk === targetKey) break outer;
         }
       }
     }
