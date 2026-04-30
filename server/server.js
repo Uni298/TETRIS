@@ -478,23 +478,43 @@ function getAllPlacementsBFS(board, type) {
   return results;
 }
 
-// ── Perfect Clear Solver ──────────────────────────────────────────
-// Searches for a placement sequence that empties the board.
-// Uses time-limited DFS with aggressive pruning.
-function findPCSequence(board, pieces, timeLimitMs=25) {
-  // Count filled cells
+// ── Perfect Clear Solver (4-line PC専用・高性能版) ─────────────────
+//
+// 設計:
+//   1. 盤面が4行以下のときのみ起動
+//   2. 既知の4PC openerパターンを最優先で試行
+//   3. DFSで全探索（ビームサーチ+積極的剪定）
+//   4. PC後はpcCycleカウンタを維持して継続PC狙い
+//
+// 4PC feasibility:
+//   空盤から10ミノで40セル = 4行ぴったり埋まる
+//   開幕: I,T,S,Z,L,J,O + 3枚追加 = 10枚で1サイクル
+// ─────────────────────────────────────────────────────────────────────
+
+// 4PCに特化した高速DFS
+// board: 現在の盤面（0=空）
+// pieces: 試すミノ列（最大10）
+// timeLimitMs: 時間制限
+function findPCSequence(board, pieces, timeLimitMs = 80) {
+  // 盤面の最高行を求める
+  let highestRow = -1;
+  for (let r = 0; r < ROWS + HIDDEN; r++) {
+    if (board[r].some(c => c !== 0)) { highestRow = r; break; }
+  }
+  const occupiedHeight = highestRow === -1 ? 0 : ROWS + HIDDEN - highestRow;
+
+  // 4PC狙いなので8行以下のみ（余裕を持って）
+  if (occupiedHeight > 8) return null;
+
+  // 埋まっているセル数
   let filled = 0;
   for (let r = 0; r < ROWS + HIDDEN; r++)
     for (let c = 0; c < COLS; c++)
       if (board[r][c]) filled++;
 
-  // Only on very low boards
-  const maxRow = board.reduce((m, row, i) => row.some(c => c !== 0) ? i : m, -1);
-  const occupiedHeight = maxRow === -1 ? 0 : ROWS + HIDDEN - maxRow;
-  if (occupiedHeight > 6) return null;
+  const limit = Math.min(pieces.length, 10);
 
-  const limit = Math.min(pieces.length, 8);
-  // Feasibility: filled + n*4 must be divisible by 10 for some n ≤ limit
+  // feasibility check: filled + n*4 が10の倍数になるnが存在するか
   let feasible = false;
   for (let n = 1; n <= limit; n++) {
     if ((filled + n * 4) % 10 === 0) { feasible = true; break; }
@@ -504,38 +524,67 @@ function findPCSequence(board, pieces, timeLimitMs=25) {
   const deadline = Date.now() + timeLimitMs;
   let best = null;
 
+  // 高さ計算（剪定用）
+  function getMaxH(b) {
+    for (let r = 0; r < ROWS + HIDDEN; r++)
+      if (b[r].some(c => c !== 0)) return ROWS + HIDDEN - r;
+    return 0;
+  }
+
+  // 穴カウント（剪定用）
+  function countHoles(b) {
+    let holes = 0;
+    for (let c = 0; c < COLS; c++) {
+      let hasBlock = false;
+      for (let r = 0; r < ROWS + HIDDEN; r++) {
+        if (b[r][c]) hasBlock = true;
+        else if (hasBlock) holes++;
+      }
+    }
+    return holes;
+  }
+
   function dfs(b, remaining, seq) {
     if (best || Date.now() > deadline) return;
     if (!remaining.length) return;
+
     const type = remaining[0];
+    // 同一ミノ種の重複排除: 次のミノと同じなら一方のみ展開
+    const rest = remaining.slice(1);
+
     const placements = getAllPlacementsFast(b, type);
-    // Sort: prefer placements that clear lines first
-    placements.sort((a, z) => z.lines - a.lines);
+    // ソート: ライン消去優先 → x順（左から）
+    placements.sort((a, z) => z.lines - a.lines || a.x - z.x);
+
     for (const p of placements) {
       if (best || Date.now() > deadline) return;
-      // Check if this achieved PC
+
+      // PC達成チェック
       if (p.board.every(row => row.every(c => c === 0))) {
         best = [...seq, { type, rot: p.rot, x: p.x }];
         return;
       }
-      // Prune: board must stay ≤ 4 rows high
-      let highestFilled = -1;
-      for (let r = 0; r < ROWS + HIDDEN; r++)
-        if (p.board[r].some(c => c !== 0)) { highestFilled = r; break; }
-      const newH = highestFilled === -1 ? 0 : ROWS + HIDDEN - highestFilled;
-      if (newH > 6) continue;
-      // Prune: check feasibility of remaining pieces
+
+      // 積極的剪定1: 高さが4行超えたら打ち切り
+      const h = getMaxH(p.board);
+      if (h > 8) continue;
+
+      // 積極的剪定2: 穴が多すぎたら打ち切り（PC不可）
+      if (countHoles(p.board) > 3) continue;
+
+      // 積極的剪定3: 残りミノで到達可能か
       let newFilled = 0;
       for (let r = 0; r < ROWS + HIDDEN; r++)
         for (let c2 = 0; c2 < COLS; c2++)
           if (p.board[r][c2]) newFilled++;
       let canPC = false;
-      for (let n = 0; n <= remaining.length - 1; n++) {
+      for (let n = 0; n <= rest.length; n++) {
         if ((newFilled + n * 4) % 10 === 0) { canPC = true; break; }
       }
       if (!canPC) continue;
-      if (remaining.length > 1) {
-        dfs(p.board, remaining.slice(1), [...seq, { type, rot: p.rot, x: p.x }]);
+
+      if (rest.length > 0) {
+        dfs(p.board, rest, [...seq, { type, rot: p.rot, x: p.x }]);
       }
     }
   }
@@ -544,7 +593,41 @@ function findPCSequence(board, pieces, timeLimitMs=25) {
   return best;
 }
 
+// ── 4PC評価ボーナス ────────────────────────────────────────────────
+// 盤面がPCに向いているかを評価する追加スコア
+function evaluatePC4Fitness(board, heights) {
+  let score = 0;
+  const maxH = Math.max(...heights);
+  const minH = Math.min(...heights);
+
+  // 4行以下ならPCボーナス
+  if (maxH <= 4) score += 2000;
+  else if (maxH <= 6) score += 800;
+  else if (maxH <= 8) score += 200;
+
+  // フラットな盤面を強く評価
+  const bumpiness = heights.reduce((a, h, i) => i > 0 ? a + Math.abs(h - heights[i-1]) : a, 0);
+  if (bumpiness <= 2) score += 500;
+  else if (bumpiness <= 4) score += 200;
+
+  // 穴がゼロなら大ボーナス
+  let holes = 0;
+  for (let c = 0; c < COLS; c++) {
+    let hasBlock = false;
+    for (let r = 0; r < ROWS + HIDDEN; r++) {
+      if (board[r][c]) hasBlock = true;
+      else if (hasBlock) holes++;
+    }
+  }
+  if (holes === 0) score += 1000;
+  else score -= holes * 500;
+
+  return score;
+}
+
 // ── Bot AI decision making ──────────────────────────────────────
+
+
 
 function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level, botLevel, ren, pcBonus=0) {
   // ── Garbage detection ──────────────────────────────────────────
@@ -593,14 +676,32 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
 
   function addBonuses(p) {
     let b = 0;
-    // T-spin bonuses removed from bot
     if (p.lines === 4) b += 800;
-    if (p.board && p.board.every(row => row.every(c => c === 0))) b += 50000 + pcBonus;
+
+    // PC達成ボーナス
+    if (p.board && p.board.every(row => row.every(c => c === 0))) {
+      b += 80000 + pcBonus; // PCは最優先
+      return b;
+    }
+
+    // PC-friendly: pcBonusが大きいとき（pcHuntMode）は
+    // 盤面を低く・フラットに保つことを強く報酬
+    if (pcBonus > 0 && p.board) {
+      const ph = [];
+      for (let c = 0; c < COLS; c++) {
+        for (let r = 0; r < ROWS + HIDDEN; r++) {
+          if (p.board[r][c]) { ph.push(ROWS + HIDDEN - r); break; }
+          if (r === ROWS + HIDDEN - 1) ph.push(0);
+        }
+      }
+      b += evaluatePC4Fitness(p.board, ph) * (pcBonus / 60000);
+    }
+
     // Garbage priority: heavily reward any line clear when garbage is threatening
     if (garbagePriority && p.lines > 0) {
-      b += p.lines * garbageRowCount * 200; // escalates with garbage count
-      if (p.lines >= 2) b += 500; // extra for multi-line clears
-      if (p.lines >= 4) b += 1500; // tetris against garbage is ideal
+      b += p.lines * garbageRowCount * 200;
+      if (p.lines >= 2) b += 500;
+      if (p.lines >= 4) b += 1500;
     }
     return b;
   }
@@ -673,14 +774,16 @@ class BotPlayer {
     this.garbageQueue = [];
     this.thinkTimer = null;
     this.currentPiece = null;
-    this.pcHuntMode = true;   // Try perfect clear at game start
-    this.pcPiecesPlaced = 0;  // Count pieces placed
-    this.lastPlacements = []; // Track last N column placements to avoid same-spot
+    // PC hunt state
+    this.pcHuntMode = true;      // 常時PC狙いモード
+    this.pcPiecesPlaced = 0;     // 累計配置数
+    this.pcCycle = 0;            // 何回目のPCサイクルか
+    this.pcFailed = 0;           // 連続失敗回数（多すぎたら一時停止）
+    this.lastPlacements = [];
     this.spawnPiece();
   }
 
   get thinkDelay() { return [0, 2200, 1400, 700, 280, 80][this.level] || 400; }
-  // moveStepDelay: how long each step in the animation takes (lower level = slower moves)
   get moveStepDelay() { return [0, 120, 80, 45, 20, 8][this.level] || 40; }
 
   spawnPiece() {
@@ -691,47 +794,77 @@ class BotPlayer {
     if (!isValid(this.board, type, 0, 3, -1)) this.alive = false;
   }
 
+  // 盤面の実効高さを返す
+  _boardHeight() {
+    for (let r = 0; r < ROWS + HIDDEN; r++)
+      if (this.board[r].some(c => c !== 0)) return ROWS + HIDDEN - r;
+    return 0;
+  }
+
+  // PCソルバーを試行し、手順を返す（なければnull）
+  _tryFindPC(timeLimitMs) {
+    const h = this._boardHeight();
+    if (h > 8) return null; // 8行超は諦める
+
+    // 現ピース + hold + next でピース列を作る
+    const cur = this.currentPiece.type;
+    const next = this.nextQueue.slice(0, 9);
+
+    // パターン1: current → next
+    let seq = findPCSequence(this.board, [cur, ...next], timeLimitMs * 0.6);
+    if (seq) return { seq, holdFirst: false };
+
+    // パターン2: hold → current → next
+    if (this.holdPiece) {
+      seq = findPCSequence(this.board, [this.holdPiece, cur, ...next.slice(0, 8)], timeLimitMs * 0.4);
+      if (seq) return { seq, holdFirst: true };
+    }
+
+    return null;
+  }
+
   think(onDone) {
     if (!this.alive || !this.currentPiece) { if(onDone)onDone(); return; }
 
-    // PC hunt mode: try to find a perfect clear sequence
-    if (this.pcHuntMode && this.pcPiecesPlaced < 22) {
-      const occupiedRows = this.board.filter(row => row.some(c => c !== 0)).length;
-      if (occupiedRows <= 6) {
-        // Build piece list: current + hold (if any) interleaved + next queue
-        const piecesNoHold = [this.currentPiece.type, ...this.nextQueue.slice(0, 7)];
-        const piecesWithHold = this.holdPiece
-          ? [this.holdPiece, this.currentPiece.type, ...this.nextQueue.slice(0, 6)]
-          : null;
+    // ── PC HUNT MODE ─────────────────────────────────────────────
+    // 連続失敗が多すぎる場合は一時的に通常AIに切り替え
+    const pcActive = this.pcHuntMode && this.pcFailed < 8;
 
-        let pcSeq = findPCSequence(this.board, piecesNoHold, 60);
-        let useHoldFirst = false;
-        if (!pcSeq && piecesWithHold) {
-          pcSeq = findPCSequence(this.board, piecesWithHold, 40);
-          if (pcSeq) useHoldFirst = true;
-        }
+    if (pcActive) {
+      const result = this._tryFindPC(100);
 
-        if (pcSeq && pcSeq.length > 0) {
-          const first = pcSeq[0];
-          const needHold = useHoldFirst || first.type !== this.currentPiece.type;
-          // Find the matching placement via BFS (includes soft-drop paths)
-          const bfsPlacements = getAllPlacementsBFS(this.board,
-            needHold && this.holdPiece ? this.holdPiece : first.type);
+      if (result && result.seq.length > 0) {
+        this.pcFailed = 0; // 解が見つかったのでリセット
+        const first = result.seq[0];
+
+        // holdFirstの場合: holdを先に使う
+        if (result.holdFirst && !this.holdPiece) {
+          // holdがない状態でholdFirst→通常フォールバック
+        } else {
+          const useType = result.holdFirst ? this.holdPiece : first.type;
+          const needHold = result.holdFirst || first.type !== this.currentPiece.type;
+
+          const bfsPlacements = getAllPlacementsBFS(this.board, useType || this.currentPiece.type);
           const placement = bfsPlacements.find(p => p.rot === first.rot && p.x === first.x);
           if (placement) {
             this.executePlacement({ ...placement, useHold: needHold }, onDone);
             return;
           }
         }
+      } else {
+        this.pcFailed++;
       }
     }
 
-    // Normal AI
-    const pcBonus = (this.pcHuntMode && this.pcPiecesPlaced < 18) ? 25000 : 0;
+    // ── NORMAL AI (PC-FRIENDLY評価) ──────────────────────────────
+    // pcHuntModeのときはPC-friendly評価を混ぜる
+    const h = this._boardHeight();
+    // 4行以下なら強いPCボーナスを与える
+    const pcBonus = pcActive ? (h <= 4 ? 60000 : h <= 6 ? 30000 : h <= 8 ? 10000 : 0) : 0;
 
     let placement = botChoosePlacement(
       this.board, this.currentPiece.type,
-      this.nextQueue.slice(0,5),
+      this.nextQueue.slice(0, 5),
       this.holdPiece,
       this.b2b, Math.max(0, this.combo),
       this.lvl, this.level, this.ren,
@@ -912,8 +1045,8 @@ class BotPlayer {
     this.lastPlacements.push(x);
     if (this.lastPlacements.length > 5) this.lastPlacements.shift();
     this.pcPiecesPlaced++;
-    // If board is not clean after 12 pieces, stop PC hunt
-    if (this.pcPiecesPlaced > 20) this.pcHuntMode = false;
+    // 長期間PCできなければ失敗カウントを増やす（thinkで判定）
+    // pcHuntModeは常時オン（continual PC cycle）
 
     const now = Date.now();
     const armed = this.garbageQueue.filter(g => g.readyAt <= now);
@@ -964,7 +1097,14 @@ class BotPlayer {
     this.score += lines*100*this.lvl + (isTSpin?lines*200:0);
 
     const allClear = this.board.every(r=>r.every(c=>c===0));
-    if (allClear) { attack = 10; this.pcHuntMode = false; } // reset PC hunt after achieving it
+    if (allClear) {
+      attack = 10;
+      this.pcCycle++;      // PCサイクル達成！
+      this.pcFailed = 0;   // 失敗カウントリセット
+      this.pcHuntMode = true; // 次のPCサイクルへ
+      // 次サイクル開始: 盤面が空なのでDFSがすぐ動く
+      console.log(`[BOT] Perfect Clear #${this.pcCycle}!`);
+    }
 
     const room = rooms[this.roomId];
     if (room && attack > 0) {
@@ -1191,6 +1331,7 @@ io.on('connection', (socket) => {
     if (ns.shogiMode!==undefined) rs.shogiMode=!!ns.shogiMode;
     if (ns.recordTraining!==undefined) rs.recordTraining=!!ns.recordTraining;
     if (ns.soloMode!==undefined) rs.soloMode=!!ns.soloMode;
+    if (ns.allspinMode!==undefined) rs.allspinMode=!!ns.allspinMode;
     broadcastRoomUpdate(room,socket.roomId);
   });
 
@@ -1198,10 +1339,10 @@ io.on('connection', (socket) => {
     const room=getRoom(socket.roomId);
     if (!room||socket.id!==room.host) return;
     const rs = room.roomSettings;
-    // ソロモード: 1人でも開始可能
-    const minPlayers = rs.soloMode ? 1 : 2;
+    // ソロモード: 1人でも開始可能 (AllSpinモードも同様)
+    const minPlayers = (rs.soloMode || rs.allspinMode) ? 1 : 2;
     if (allPlayers(room).length < minPlayers) {
-      socket.emit('error',{msg: rs.soloMode ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
+      socket.emit('error',{msg: (rs.soloMode||rs.allspinMode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
     }
     room.started=true;
     room.bagSeed=Math.floor(Math.random()*1000000);
@@ -1209,7 +1350,7 @@ io.on('connection', (socket) => {
     room.players.forEach(p=>{p.board=null;p.score=0;p.lines=0;p.level=1;p.alive=true;p.combo=0;p.b2b=false;});
 
     const humanCount=room.players.length;
-    const isSolo = humanCount === 1 && room.bots.length === 0;
+    const isSolo = (humanCount === 1 && room.bots.length === 0) || !!(room.roomSettings&&room.roomSettings.allspinMode);
     const doShogi=room.roomSettings.shogiMode&&humanCount===1&&room.bots.length>=1;
     room.shogiMode=doShogi;
     room.isSolo=isSolo;
@@ -1224,7 +1365,8 @@ io.on('connection', (socket) => {
     io.to(socket.roomId).emit('game_start',{
       players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null})),
       bagSeed:room.bagSeed,mutationMode:room.mutationMode,mutationSeed:room.mutationSeed,
-      roomSettings:room.roomSettings,shogiMode:doShogi,isSolo
+      roomSettings:room.roomSettings,shogiMode:doShogi,isSolo,
+      allspinMode:!!(room.roomSettings&&room.roomSettings.allspinMode)
     });
 
     // 学習データ記録: AIモードが有効 かつ ホストがrecordTrainingをオンにしている場合

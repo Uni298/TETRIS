@@ -84,6 +84,7 @@ let myId=null,roomId=null,myName='',isHost=false,roomPlayers=[];
 let _reconnecting=false;
 let shogiMode=false;
 let isSoloGame=false;
+let allspinMode=false;
 let isSpectator=false; // 観戦モードフラグ
 socket.on('connect',()=>{
   myId=socket.id;
@@ -363,6 +364,9 @@ function returnToRoom(){
   const sb=document.getElementById('spectate-banner');if(sb)sb.remove();
   const fb=document.getElementById('force-end-btn');if(fb)fb.remove();
   stopDAS();stopSoftDrop();removeInput();
+  // AllSpinオーバーレイを閉じる
+  const ao=document.getElementById('allspin-overlay');if(ao)ao.classList.remove('active');
+  asState=null; allspinMode=false;
   if(gameState){try{gameState.cancelLock();}catch(e){}gameState=null;}
   renderer=null;isSpectator=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
@@ -386,6 +390,9 @@ function backToLobby(){
   const sb=document.getElementById('spectate-banner');if(sb)sb.remove();
   const fb=document.getElementById('force-end-btn');if(fb)fb.remove();
   stopDAS();stopSoftDrop();removeInput();
+  // AllSpinオーバーレイを閉じる
+  const ao=document.getElementById('allspin-overlay');if(ao)ao.classList.remove('active');
+  asState=null; allspinMode=false;
   if(gameState){try{gameState.cancelLock();}catch(e){}gameState=null;}
   renderer=null;isSpectator=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
@@ -489,7 +496,7 @@ socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,muta
   if(rs){roomSettings={...roomSettings,...rs};}
   document.getElementById('room-id-display').textContent=rid;
   updatePlayerList(players);
-  document.getElementById('start-btn').style.display=isHost&&players.length>=2?'block':'none';
+  document.getElementById('start-btn').style.display=isHost&&(players.length>=2||(rs&&(rs.soloMode||rs.allspinMode)&&players.length>=1))?'block':'none';
   document.getElementById('wait-status').textContent=players.length<2?'Waiting for players... (min 2)':`${players.length} players ready`;
   const mrow=document.getElementById('mutation-row-wrap');
   if(mrow)mrow.style.display=isHost?'flex':'none';
@@ -526,7 +533,7 @@ socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,r
   if(!started)resetRoomInactivityTimer();
   else{if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);_removeInactivityBtn();}
   const total=players.length;
-  const isSoloAllowed=rs&&rs.soloMode;
+  const isSoloAllowed=rs&&(rs.soloMode||rs.allspinMode);
   const canStart=isHost&&!started&&(total>=2||(isSoloAllowed&&total>=1));
   document.getElementById('start-btn').style.display=canStart?'block':'none';
   const feb=document.getElementById('force-end-waiting-btn');
@@ -598,6 +605,7 @@ function updateRoomSettingsUI(rs){
   const bl=document.getElementById('bot-level-input');if(bl){bl.value=rs.botLevel??3;document.getElementById('bot-level-val').textContent=getBotLevelLabel(rs.botLevel??3);}
   const sg=document.getElementById('shogi-toggle');if(sg)sg.checked=!!(rs.shogiMode);
   const soloTog=document.getElementById('solo-toggle');if(soloTog)soloTog.checked=!!(rs.soloMode);
+  const asTog=document.getElementById('allspin-toggle');if(asTog)asTog.checked=!!(rs.allspinMode);
   const recTog=document.getElementById('record-training-toggle');if(recTog)recTog.checked=!!(rs.recordTraining);
   const vo=document.getElementById('settings-view-content');
   if(vo&&rs){
@@ -614,7 +622,7 @@ function getBotLevelLabel(lvl){
 }
 
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode'];
   const parsed=boolKeys.includes(key)?(!!val):(parseInt(val)||0);
   roomSettings[key]=parsed;
   socket.emit('set_room_settings',{[key]:parsed});
@@ -643,7 +651,7 @@ function updatePlayerList(players){
 }
 
 // ---- Countdown then start ----
-socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo})=>{
+socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm})=>{
   // ゲーム開始時は非アクティブタイマーをクリア
   if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);
   _removeInactivityBtn();
@@ -652,14 +660,20 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   mutationSeed=ms||0;
   shogiMode=!!sm;
   isSoloGame=!!solo;
+  allspinMode=!!asm;
   if(rs)roomSettings={...roomSettings,...rs};
   _pieceCounter=0;
   showScreen('game');
   showDpad(true);
   setupDpadButtons();
-  showCountdown(bagSeed,()=>initGame(players,bagSeed));
+  if(allspinMode){
+    showCountdown(bagSeed,()=>initAllSpinGame(players,bagSeed));
+  } else {
+    showCountdown(bagSeed,()=>initGame(players,bagSeed));
+  }
   if(sm)addChatSystem('♟ SHOGI MODE: BOT responds to each of your moves!');
   if(solo)addChatSystem('🎮 SOLO MODE — survive as long as possible!');
+  if(asm)addChatSystem('🌀 ALLSPIN MODE — スピンをマスターせよ！');
   if(rs&&rs.recordTraining)addChatSystem('🔴 Recording training data...');
 });
 
@@ -1244,7 +1258,8 @@ class TetrisGame{
     // ゲームオーバー判定: pendingGameOverまたはスポーン失敗
     if(!this.alive||this._pendingGameOver){
       this.alive=false;this._pendingGameOver=false;
-      socket.emit('game_over');renderer&&renderer.onGameOver();
+      if(!allspinMode){socket.emit('game_over');renderer&&renderer.onGameOver();}
+      else{this.alive=true;} // AllSpinモードではゲームオーバーにしない
     }
   }
 
@@ -1351,7 +1366,9 @@ class TetrisGame{
       this.lastSpin=null;this.lastSpinType=null;this.locking=false;
       if(renderer)renderer._wallBumpActive=false;
       // ゲームオーバー: ホールド後スポーン位置が既存ブロックと重なったら
-      if(!this.isValid(this.current)){this.alive=false;socket.emit("game_over");renderer&&renderer.onGameOver();}
+      if(!this.isValid(this.current)){
+        if(!allspinMode){this.alive=false;socket.emit("game_over");renderer&&renderer.onGameOver();}
+      }
     }else{
       this.holdPiece=type;
       this.holdCustomShape=customShape;
@@ -1409,6 +1426,827 @@ function initGame(players,bagSeed){
     renderer&&renderer.update(rawDt*ANIM_SPEED);
   });
 }
+
+// ==========================================
+// ===== ALLSPIN MODE =======================
+// ==========================================
+
+// 10種類のスピンチャレンジ定義
+const ALLSPIN_CHALLENGES = [
+  {
+    id:'tspin_double', label:'T-SPIN DOUBLE', targetSpin:'TSPIN', targetLines:2,
+    color:'#cc00ff', hint:'Tミノを使って2ライン消去のTスピンを決めろ！',
+    piece:'T'
+  },
+  {
+    id:'tspin_triple', label:'T-SPIN TRIPLE', targetSpin:'TSPIN', targetLines:3,
+    color:'#ff00cc', hint:'T-Spin Tripleを決めよう。縦穴を作れ！',
+    piece:'T'
+  },
+  {
+    id:'tspin_single', label:'T-SPIN SINGLE', targetSpin:'TSPIN', targetLines:1,
+    color:'#dd44ff', hint:'1ライン消去のTスピン。準備の盤面を活かせ！',
+    piece:'T'
+  },
+  {
+    id:'mini_tspin', label:'MINI T-SPIN', targetSpin:'MINI_TSPIN', targetLines:1,
+    color:'#aa66ff', hint:'ミニTスピンでも十分！回転で滑り込め',
+    piece:'T'
+  },
+  {
+    id:'ispin', label:'I-SPIN', targetSpin:'ISPIN', targetLines:1,
+    color:'#00f5ff', hint:'Iミノをキックで回転させながらはめ込め！',
+    piece:'I'
+  },
+  {
+    id:'sspin', label:'S-SPIN', targetSpin:'SSPIN', targetLines:1,
+    color:'#8BC34A', hint:'Sミノを着地後に回転させて消去！',
+    piece:'S'
+  },
+  {
+    id:'zspin', label:'Z-SPIN', targetSpin:'ZSPIN', targetLines:1,
+    color:'#ff006e', hint:'Zミノを着地後に回転させて消去！',
+    piece:'Z'
+  },
+  {
+    id:'lspin', label:'L-SPIN', targetSpin:'LSPIN', targetLines:1,
+    color:'#ff8500', hint:'Lミノを底に沿わせてスピン。タイミングが鍵！',
+    piece:'L'
+  },
+  {
+    id:'jspin', label:'J-SPIN', targetSpin:'JSPIN', targetLines:1,
+    color:'#4361ee', hint:'Jミノのスピンを決めよう！',
+    piece:'J'
+  },
+  {
+    id:'spin180', label:'180° SPIN', targetSpin:'SPIN180', targetLines:1,
+    color:'#ffffff', hint:'Aキーで180°回転させながらラインを消去！',
+    piece:null // any
+  },
+];
+
+// ============================================================
+// AllSpin 盤面パターン定義
+//
+// 設計規則:
+//   - rows配列: 各要素が盤面1行（HIDDEN=3行目〜22行目 = board[3..22]）
+//     インデックス0=rows[0]が最上段(board[HIDDEN]=board[3])
+//     インデックス19=最下段(board[22])
+//   - 0=空セル、1=ブロック（後でランダム色で着色）
+//   - 10列固定
+//   - spinCount: NEXTに詰めるミノ数（連続スピン回数）
+//   - piece: 使うミノ種
+//   - hint: 操作ガイド
+//
+// 各スピンのSRS/着地条件:
+//   T-spin: Tピース回転後に「前面コーナー2つが埋まっている」
+//   S-spin: Sピースが着地状態で回転（回転後に下にブロック/床）
+//   Z-spin: Zピースが着地状態で回転
+//   L-spin: Lピースが着地状態で回転
+//   J-spin: Jピースが着地状態で回転
+//   I-spin: Iピースがkickを使って回転
+//   180-spin: 180°回転（Aキー）でkickして滑り込む
+// ============================================================
+
+// 盤面をboard配列（ROWS+HIDDEN行×COLS列）に変換する
+// rows: 20行分（上→下）、0=空 1=ブロック
+function makeBoardFromRows(rows, rng) {
+  const colors = ['I','L','J','S','Z','T','O'];
+  const b = Array.from({length:ROWS+HIDDEN}, ()=>Array(COLS).fill(0));
+  for(let i=0;i<rows.length&&i<ROWS;i++){
+    const boardRow = HIDDEN + i;
+    for(let c=0;c<COLS;c++){
+      if(rows[i][c]) b[boardRow][c] = colors[Math.floor(rng()*colors.length)];
+    }
+  }
+  return b;
+}
+
+// ============================================================
+// 各チャレンジのパターンリスト
+// patterns配列: 複数バリエーションをランダム選択
+// ============================================================
+const ALLSPIN_PATTERNS = {
+
+  // ─────────────────────────────────────────────────
+  // T-SPIN DOUBLE: T字穴を横4〜5箇所連続
+  // Tミノ rot=2 (▽)で下から滑り込む。
+  // 穴: 上2行で[1,0,1]、下1行で[0,0,0] → T字
+  // 穴の横には必ずブロックで支持
+  // ─────────────────────────────────────────────────
+  tspin_double: [
+    {
+      // 右寄りT字穴×5列（交互TSD連続）
+      // 各穴: 行A=[..1,0,1..] 行B=[..0,0,0..] の2行ペア
+      // 穴位置(中心x): 1,3,5,7 の4箇所
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,1,1,1,1],  // 穴A: x=1 (left slot)
+        [0,0,0,1,0,0,0,1,1,1],  // 穴B: x=1
+        [1,0,1,1,1,0,1,1,1,1],  // 穴A: x=5 (right slot) / x=1 continuation
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+    {
+      // 左半分: T字穴×3、右壁塞ぎ
+      // rot=1 (▷) で右から入るTSD
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,1,0,0,0,1,1],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,1,0,0,0,1,1],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,1,0,0,0,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // T-SPIN TRIPLE: 深い縦穴（3行使う）
+  // rot=0 (△) で上からキックで入る、あるいは
+  // rot=2 (▽) で底のキックで3行全消し
+  // 穴形状: 上1行[1,0,1] 中1行[0,0,0] 下1行[1,0,1]
+  // 実際には "overhang + TSD" 的な形
+  // ─────────────────────────────────────────────────
+  tspin_triple: [
+    {
+      // T-spin Triple用: タワー穴×3
+      // 各穴: 3行深で1本の縦穴+overhang
+      // 穴位置: c=1, c=5 の2箇所
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [0,0,1,1,0,0,1,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [0,0,1,1,0,0,1,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [0,0,1,1,0,0,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // T-SPIN SINGLE: 1ライン消去のTスピン
+  // rot=3 (◁) or rot=1 (▷) で横から挟む
+  // 穴: [1,0,0,0] の1行（Tが横向きで入る）
+  // ─────────────────────────────────────────────────
+  tspin_single: [
+    {
+      // 左壁からのTSS: rot=1 (▷向き) で左から差し込む
+      // 穴: c=0〜2 に [0,0,0]、c=3に壁
+      // 2行でペア: 上[1,0,1,1,...] 下[0,0,0,1,...]
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // MINI T-SPIN: kick1つ（0→R or 0→L）で滑り込む
+  // 穴形状: [0,0,1] + [0,1,1] → Tが引っかかる形
+  // ─────────────────────────────────────────────────
+  mini_tspin: [
+    {
+      // ミニTSS: 左コーナー引っかかりパターン
+      // Tをrot=0で落として、左回転(→rot=3)でL字に滑り込む
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,1,0,0,1,0,0,1,0],
+        [0,1,1,0,1,1,0,1,1,0],
+        [1,1,1,1,1,1,1,1,1,1],
+        [0,0,1,0,0,1,0,0,1,0],
+        [0,1,1,0,1,1,0,1,1,0],
+        [1,1,1,1,1,1,1,1,1,1],
+        [0,0,1,0,0,1,0,0,1,0],
+        [0,1,1,0,1,1,0,1,1,0],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // I-SPIN: IミノをSRSキックで縦穴に入れる
+  // KICK_I '0->1' or '2->3' の第3・4キックで
+  // 縦向きIが横穴に滑り込む
+  //
+  // 最も代表的: 横向きI(rot=0)を右回転(→rot=1)するとき
+  // kick3: [-2,-1]（左2、上1）で狭い縦穴に入る
+  //
+  // 盤面: 縦3マスの穴を横に4〜5個並べる
+  // 穴の上はoverhang（天井）で1マス塞ぐ
+  // ─────────────────────────────────────────────────
+  ispin: [
+    {
+      // I-spin: 縦穴4連 (overhang付き)
+      // 穴: c=1〜3（幅1、深さ4） overhangがc=1上端を塞ぐ
+      // Iをrot=0で上に置き、右回転(kick3)で縦穴へ
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,0,1,0,1,0,1,1],  // overhang: 偶数列に天井
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,0,1,0,1,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,0,1,0,1,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+    {
+      // I-spin variant: 横向きに狭い穴を横から差し込む
+      // rot=1(縦)のIを左回転(→rot=0)で幅1の隙間に水平に入れる
+      // 穴: 1行だけ空いた行を4〜6個並べる
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,0,0,1,1,1,1,1],  // 左端から横向きIを差し込む穴
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // S-SPIN: Sミノ着地後に回転してライン消去
+  // SRSなし（着地状態での回転判定）
+  //
+  // Sミノ rot=0:
+  //   [0,1,1]
+  //   [1,1,0]
+  // Sミノ rot=1 (右回転後):
+  //   [0,1,0]
+  //   [0,1,1]
+  //   [0,0,1]
+  //
+  // 実用的なS-spin:
+  // 段差構造で rot=0 Sを着地→右回転(rot=1)でライン消去
+  // 穴: 2行で [1,1,0,0,1,1,1,1,1,1] と [1,0,0,1,1,1,1,1,1,1]
+  // ─────────────────────────────────────────────────
+  sspin: [
+    {
+      // S-spin: 段差穴を左から右へ5連続
+      // 各穴は2行使用、左ずつシフト
+      // Sをrot=1(縦向き)で着地後、左回転(→rot=0)で横ラインに
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // Z-SPIN: Zミノ着地後に回転
+  // Zミノ rot=0:
+  //   [1,1,0]
+  //   [0,1,1]
+  // Zミノ rot=1 (右回転後):
+  //   [0,0,1]
+  //   [0,1,1]
+  //   [0,1,0]
+  //
+  // S-spinの鏡像パターン
+  // ─────────────────────────────────────────────────
+  zspin: [
+    {
+      // Z-spin: 段差穴（Sの逆）
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // L-SPIN: Lミノ着地後に回転
+  // Lミノ rot=2:
+  //   [0,0,0]
+  //   [1,1,1]
+  //   [1,0,0]
+  // 右回転(→rot=3):
+  //   [1,1,0]
+  //   [0,1,0]
+  //   [0,1,0]
+  //
+  // 使いやすいL-spin:
+  // Lをrot=1(縦右)で着地、右回転(→rot=2)で横ラインへ
+  // rot=1:
+  //   [0,1,0]
+  //   [0,1,0]
+  //   [0,1,1]
+  // ─────────────────────────────────────────────────
+  lspin: [
+    {
+      // L-spin: コーナー引っかかり×6
+      // rot=1(縦)で着地→右回転(rot=2)でライン消去
+      // 穴の形: 右コーナーがあるL字穴
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,1,0,0,1,0,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,0,1,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,0,1,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // J-SPIN: Jミノ着地後に回転（Lの鏡像）
+  // Jミノ rot=3(縦左)で着地→左回転(rot=2)でライン消去
+  // rot=3:
+  //   [1,1,0]
+  //   [0,1,0]
+  //   [0,1,0]
+  // ─────────────────────────────────────────────────
+  jspin: [
+    {
+      // J-spin: 左コーナー引っかかり×6
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,1,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,1],
+        [1,0,1,1,1,1,1,1,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,1],
+        [1,0,1,1,1,1,1,1,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // 180° SPIN: Tミノ180°（Aキー）で天井裏に滑り込む
+  // rot=0(△)→rot=2(▽)で天井のある穴に入る
+  // kick180テーブル: [[0,0],[1,0],[-1,0],[0,1],[1,1],[-1,1]]
+  // 穴形状: 上overhang + 下3マス空き（T字型、上が塞がれた形）
+  // ─────────────────────────────────────────────────
+  spin180: [
+    {
+      // 180 T-spin: overhang穴×5
+      // Tをrot=0で穴の上に置き、Aで180回転してoverhangの下に入る
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,1,1,1,1],  // overhang (天井)
+        [0,0,0,1,0,0,0,1,1,1],  // 穴（T字の下）
+        [1,1,1,1,1,0,1,1,1,1],  // 仕切り
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,1,1,1,1,0,1,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+    {
+      // 180 J-spin: Jミノ180°でoverhangの下へ
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,1,1,0,0,1,1,1],  // overhang
+        [0,0,0,0,0,0,0,0,1,1],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,1,1,0,0,1,1,1],
+        [0,0,0,0,0,0,0,0,1,1],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,1,1,0,0,1,1,1],
+        [0,0,0,0,0,0,0,0,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+};
+
+// ============================================================
+// AllSpinの問題を生成する
+// ============================================================
+function generateAllSpinProblem(challengeIdx, rngSeed) {
+  const ch = ALLSPIN_CHALLENGES[challengeIdx % ALLSPIN_CHALLENGES.length];
+  const rng = seededRng(rngSeed);
+
+  // パターンを選択
+  const patterns = ALLSPIN_PATTERNS[ch.id] || ALLSPIN_PATTERNS['tspin_double'];
+  const pattern = patterns[Math.floor(rng() * patterns.length)];
+
+  // 盤面を生成
+  const board = makeBoardFromRows(pattern.rows, rng);
+
+  // NEXTキュー: 全部同じミノ（spinCount個）
+  const mainPiece = ch.piece || 'T';
+  const queue = Array.from({length: pattern.spinCount}, ()=> mainPiece);
+
+  return { challenge:ch, board, queue, spinCount: pattern.spinCount };
+}
+
+// 旧applyBoardPattern互換（もう使わないがエラー防止で残す）
+function applyBoardPattern(board, pattern, rng) { return board; }
+
+// AllSpinゲームの状態
+let asState = null;
+
+function initAllSpinGame(players, bagSeed) {
+  setupInput();
+
+  asState = {
+    problemIdx: 0,
+    solved: 0,
+    streak: 0,
+    bestStreak: 0,
+    rngSeed: bagSeed,
+    currentChallenge: null,
+    waitingNextProblem: false,
+    flashTimer: null,
+  };
+
+  // オーバーレイを表示
+  const overlay = document.getElementById('allspin-overlay');
+  if(overlay) overlay.classList.add('active');
+
+  // 最初の問題をロード
+  loadNextAllSpinProblem();
+
+  // ゲームループ: 通常ゲームと同じ
+  let lastTime = performance.now();
+  gameApp.ticker.add(()=>{
+    const now = performance.now();
+    const rawDt = Math.min(now-lastTime,100);
+    lastTime = now;
+    if(gameState && gameState.alive){
+      gameState.updateGravity(rawDt);
+    }
+    renderer && renderer.update(rawDt*ANIM_SPEED);
+  });
+}
+
+function loadNextAllSpinProblem() {
+  if(!asState) return;
+
+  const rng = seededRng(asState.rngSeed + asState.problemIdx * 137);
+  const challengeIdx = Math.floor(rng() * ALLSPIN_CHALLENGES.length);
+  const problem = generateAllSpinProblem(challengeIdx, asState.rngSeed + asState.problemIdx * 7919);
+  asState.currentChallenge = problem.challenge;
+  asState.spinCount = problem.spinCount;
+  asState.spinsDone = 0;
+  asState.waitingNextProblem = false;
+
+  if(!gameState) gameState = new TetrisGame(asState.rngSeed + asState.problemIdx);
+  if(gameState.lockTimer){clearTimeout(gameState.lockTimer);gameState.lockTimer=null;}
+
+  gameState.board = problem.board.map(r=>[...r]);
+  gameState.alive = true;
+  gameState.lastSpin = null;
+  gameState.lastSpinType = null;
+  gameState.locking = false;
+  gameState.score = asState.solved * 1000;
+  gameState.holdPiece = null;
+  gameState.holdCustomShape = null;
+  gameState.holdUsed = false;
+  gameState.combo = -1;
+  gameState.b2b = false;
+  gameState.garbageQueue = [];
+  gameState._pendingGameOver = false;
+
+  // NEXTキュー: 全部同じミノ（spinCount+5個）
+  const mainPiece = problem.challenge.piece || 'T';
+  gameState.nextQueue = Array.from({length: problem.spinCount + 5}, ()=>({type: mainPiece, customShape: null}));
+
+  // 現在ミノをスポーン
+  const firstEntry = gameState.nextQueue.shift();
+  gameState.current = {type: firstEntry.type, rotation: 0, x: 3, y: SPAWN_Y, customShape: null};
+
+  updateAllSpinUI();
+  if(renderer){
+    renderer.drawBoard(); renderer.drawGhost(); renderer.drawCurrent();
+    renderer.drawNextPieces(); renderer.drawHold(); renderer.updateScoreUI();
+  }
+}
+
+function updateAllSpinUI() {
+  if(!asState || !asState.currentChallenge) return;
+  const ch = asState.currentChallenge;
+
+  const targetEl = document.getElementById('allspin-spin-target');
+  if(targetEl){
+    targetEl.textContent = ch.label;
+    targetEl.style.color = ch.color;
+  }
+
+  const hintEl = document.getElementById('allspin-hint');
+  if(hintEl) hintEl.textContent = ch.hint;
+
+  const progEl = document.getElementById('allspin-progress');
+  if(progEl) progEl.textContent = `問題 ${asState.problemIdx + 1}`;
+
+  const solvedEl = document.getElementById('allspin-solved-count');
+  if(solvedEl) solvedEl.textContent = asState.solved;
+
+  const streakEl = document.getElementById('allspin-streak');
+  if(streakEl) streakEl.textContent = `🔥 ${asState.streak} streak`;
+}
+
+function checkAllSpinClear(spinType, linesCleared) {
+  if(!asState || !asState.currentChallenge || asState.waitingNextProblem) return false;
+  const ch = asState.currentChallenge;
+
+  // スピン種類が一致していればカウント（ラインは1本以上）
+  const spinMatch = spinType === ch.targetSpin;
+  if(!spinMatch || linesCleared < 1) return false;
+
+  asState.spinsDone = (asState.spinsDone || 0) + 1;
+
+  // フラッシュ演出（スピンごと）
+  showAllSpinFlash(ch, asState.spinsDone);
+
+  // progress UI更新
+  const progEl = document.getElementById('allspin-progress');
+  if(progEl) progEl.textContent = `スピン ${asState.spinsDone} / ${asState.spinCount}`;
+
+  // spinCount回達したら問題クリア
+  if(asState.spinsDone >= asState.spinCount) {
+    asState.waitingNextProblem = true;
+    asState.solved++;
+    asState.streak++;
+    asState.problemIdx++;
+    asState.rngSeed = (asState.rngSeed * 1664525 + 1013904223) >>> 0;
+
+    showAllSpinClearFlash(ch, asState.streak);
+
+    const solvedEl = document.getElementById('allspin-solved-count');
+    if(solvedEl) solvedEl.textContent = asState.solved;
+    const streakEl = document.getElementById('allspin-streak');
+    if(streakEl) streakEl.textContent = `🔥 ${asState.streak} streak`;
+
+    setTimeout(()=>{ if(asState) loadNextAllSpinProblem(); }, 1500);
+  }
+  return true;
+}
+
+// 1スピンごとのミニフラッシュ
+function showAllSpinFlash(challenge, count) {
+  const flash = document.getElementById('allspin-cleared-flash');
+  const text = document.getElementById('allspin-flash-text');
+  if(!flash || !text) return;
+  const msgs = ['SPIN!','NICE!','GREAT!','PERFECT!','AMAZING!'];
+  text.textContent = msgs[Math.min(count-1, msgs.length-1)];
+  text.style.color = challenge.color;
+  flash.classList.add('show');
+  clearTimeout(asState._miniFlashTimer);
+  asState._miniFlashTimer = setTimeout(()=>flash.classList.remove('show'), 600);
+}
+
+function showAllSpinClearFlash(challenge, streak) {
+  const flash = document.getElementById('allspin-cleared-flash');
+  const text = document.getElementById('allspin-flash-text');
+  if(!flash || !text) return;
+
+  let msg = 'NICE SPIN!';
+  if(streak >= 10) msg = '🔥 GODLIKE!!';
+  else if(streak >= 7) msg = '🔥 UNSTOPPABLE!';
+  else if(streak >= 5) msg = '🔥 ON FIRE!';
+  else if(streak >= 3) msg = '🌀 SPINNING!';
+
+  text.textContent = msg;
+  text.style.color = challenge.color;
+  flash.classList.add('show');
+
+  clearTimeout(asState.flashTimer);
+  asState.flashTimer = setTimeout(()=>{
+    flash.classList.remove('show');
+  }, 1200);
+}
+
+// AllSpinモードでピースがロックされた時にスピンチェック
+// clearLinesでスピン消去を検出するためのhook
+const _origClearLines = TetrisGame.prototype.clearLines;
+TetrisGame.prototype.clearLines = function() {
+  const spinType = this.lastSpinType;
+  _origClearLines.call(this);
+
+  // AllSpinモードでの判定
+  if(allspinMode && asState && spinType) {
+    // clearLinesで消去されたライン数を取得（this._lastLinesCleared）
+    const cleared = this._lastLinesCleared || 0;
+    if(cleared > 0) {
+      checkAllSpinClear(spinType, cleared);
+    }
+  }
+};
+
+// AllSpinモード: ゲームオーバーにならないようにリセット
+const _origLockPiece = TetrisGame.prototype.lockPiece;
+TetrisGame.prototype.lockPiece = function() {
+  if(allspinMode && asState) {
+    // AllSpinモードではゲームオーバーを無効化
+    this._pendingGameOver = false;
+  }
+  _origLockPiece.call(this);
+  // AllSpinモードで積み上がりが危険なら盤面をリセット（問題スキップ）
+  if(allspinMode && asState && !asState.waitingNextProblem) {
+    // 上3行以内に積まれたらスキップ
+    let topRow = ROWS + HIDDEN;
+    for(let r=0;r<ROWS+HIDDEN;r++){
+      if(this.board[r].some(v=>v)){topRow=r;break;}
+    }
+    if(topRow < HIDDEN + 3) {
+      asState.streak = 0; // ストリーク切れ
+      asState.problemIdx++;
+      asState.waitingNextProblem = true;
+      setTimeout(()=>{ if(asState) loadNextAllSpinProblem(); }, 800);
+    }
+  }
+};
+
+
 
 // ---- Floating Label ----
 class FloatLabel{

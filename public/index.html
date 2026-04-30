@@ -464,9 +464,110 @@
     to   { box-shadow: 0 0 14px rgba(255,0,110,0.9); }
   }
 
-  /* MUTATION TOGGLE in waiting room */
-  .mutation-row {
+  /* ALLSPIN MODE OVERLAY */
+  #allspin-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 5000;
+    pointer-events: none;
+  }
+  #allspin-overlay.active { display: block; }
+  #allspin-problem-panel {
+    position: absolute;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(3,7,18,0.97);
+    border: 1px solid rgba(204,0,255,0.6);
+    border-radius: 12px;
+    padding: 0.8rem 1.4rem;
+    text-align: center;
+    pointer-events: all;
+    min-width: 260px;
+    box-shadow: 0 0 20px rgba(204,0,255,0.3);
+  }
+  #allspin-problem-panel .as-title {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.65rem;
+    color: rgba(204,0,255,0.7);
+    letter-spacing: 0.2em;
+    margin-bottom: 0.25rem;
+  }
+  #allspin-spin-target {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.6rem;
+    font-weight: 900;
+    letter-spacing: 0.1em;
+    margin: 0.2rem 0;
+  }
+  #allspin-hint {
+    font-size: 0.72rem;
+    color: rgba(255,255,255,0.45);
+    margin-top: 0.2rem;
+    letter-spacing: 0.06em;
+  }
+  #allspin-progress {
+    font-size: 0.7rem;
+    color: rgba(255,255,255,0.35);
+    margin-top: 0.4rem;
+    letter-spacing: 0.08em;
+  }
+  #allspin-cleared-flash {
+    position: absolute;
+    inset: 0;
     display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.1s;
+  }
+  #allspin-cleared-flash.show { opacity: 1; }
+  #allspin-cleared-flash .flash-text {
+    font-family: 'Orbitron', sans-serif;
+    font-size: clamp(2rem, 6vw, 4rem);
+    font-weight: 900;
+    letter-spacing: 0.15em;
+    text-shadow: 0 0 30px currentColor;
+    animation: spinFlashPop 0.4s cubic-bezier(0.17,0.67,0.35,1.3);
+  }
+  @keyframes spinFlashPop {
+    from { transform: scale(0.4); opacity: 0; }
+    to   { transform: scale(1);   opacity: 1; }
+  }
+  #allspin-score-panel {
+    position: absolute;
+    top: 12px;
+    right: 16px;
+    background: rgba(3,7,18,0.9);
+    border: 1px solid rgba(204,0,255,0.3);
+    border-radius: 8px;
+    padding: 0.5rem 0.9rem;
+    text-align: center;
+    pointer-events: none;
+    min-width: 90px;
+  }
+  #allspin-score-panel .as-score-lbl {
+    font-size: 0.6rem;
+    color: rgba(204,0,255,0.6);
+    font-family: 'Orbitron', sans-serif;
+    letter-spacing: 0.15em;
+  }
+  #allspin-solved-count {
+    font-family: 'Orbitron', sans-serif;
+    font-size: 1.4rem;
+    font-weight: 900;
+    color: #cc00ff;
+  }
+  #allspin-streak {
+    font-size: 0.68rem;
+    color: rgba(255,190,11,0.7);
+    margin-top: 0.15rem;
+  }
+
+  /* MUTATION TOGGLE in waiting room */
+  .mutation-row {    display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0.7rem 1rem;
@@ -922,6 +1023,16 @@
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">
+            <label>🌀 AllSpin Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="allspin-toggle" onchange="updateRoomSetting('allspinMode',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(204,0,255,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">練習</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
             <label>🔴 Record Training</label>
             <label class="toggle-switch" style="width:46px;height:24px">
               <input type="checkbox" id="record-training-toggle" onchange="updateRoomSetting('recordTraining',this.checked)">
@@ -955,6 +1066,24 @@
   <!-- GAME -->
   <div id="game" class="screen">
     <div id="pixi-container"></div>
+  </div>
+</div>
+
+<!-- ALLSPIN MODE OVERLAY -->
+<div id="allspin-overlay">
+  <div id="allspin-problem-panel">
+    <div class="as-title">🌀 ALLSPIN CHALLENGE</div>
+    <div id="allspin-spin-target" style="color:#cc00ff">T-SPIN DOUBLE</div>
+    <div id="allspin-hint">Tミノをスピンさせてラインを消そう</div>
+    <div id="allspin-progress">問題 1 / ∞</div>
+  </div>
+  <div id="allspin-score-panel">
+    <div class="as-score-lbl">SOLVED</div>
+    <div id="allspin-solved-count">0</div>
+    <div id="allspin-streak">🔥 0 streak</div>
+  </div>
+  <div id="allspin-cleared-flash">
+    <div class="flash-text" id="allspin-flash-text" style="color:#cc00ff">NICE!</div>
   </div>
 </div>
 
