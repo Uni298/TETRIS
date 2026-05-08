@@ -244,6 +244,9 @@
     align-items: stretch;
     background: var(--dark-bg);
     position: relative;
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
   }
 
   /* CHAT — 画面左下固定、常時表示 */
@@ -536,36 +539,6 @@
     from { transform: scale(0.4); opacity: 0; }
     to   { transform: scale(1);   opacity: 1; }
   }
-  #allspin-timer-panel {
-    position: absolute;
-    top: 12px;
-    left: 16px;
-    background: rgba(3,7,18,0.95);
-    border: 1px solid rgba(0,245,255,0.4);
-    border-radius: 8px;
-    padding: 0.4rem 0.8rem;
-    text-align: center;
-    pointer-events: none;
-    min-width: 64px;
-    box-shadow: 0 0 12px rgba(0,245,255,0.2);
-  }
-  .as-timer-lbl {
-    font-family: 'Orbitron', sans-serif;
-    font-size: 0.55rem;
-    color: rgba(0,245,255,0.6);
-    letter-spacing: 0.2em;
-  }
-  #allspin-timer {
-    font-family: 'Orbitron', sans-serif;
-    font-size: 2rem;
-    font-weight: 900;
-    color: #00f5ff;
-    line-height: 1;
-  }
-  @keyframes timerPulse {
-    0%,100% { transform: scale(1); }
-    50%      { transform: scale(1.15); }
-  }
   #allspin-score-panel {
     position: absolute;
     top: 12px;
@@ -576,30 +549,24 @@
     padding: 0.5rem 0.9rem;
     text-align: center;
     pointer-events: none;
-    min-width: 100px;
+    min-width: 90px;
   }
   #allspin-score-panel .as-score-lbl {
-    font-size: 0.55rem;
+    font-size: 0.6rem;
     color: rgba(204,0,255,0.6);
     font-family: 'Orbitron', sans-serif;
     letter-spacing: 0.15em;
   }
-  #allspin-score-val {
-    font-family: 'Orbitron', sans-serif;
-    font-size: 1.1rem;
-    font-weight: 900;
-    color: #ffbe0b;
-  }
   #allspin-solved-count {
     font-family: 'Orbitron', sans-serif;
-    font-size: 1.3rem;
+    font-size: 1.4rem;
     font-weight: 900;
     color: #cc00ff;
   }
   #allspin-streak {
     font-size: 0.68rem;
     color: rgba(255,190,11,0.7);
-    margin-top: 0.1rem;
+    margin-top: 0.15rem;
   }
 
   /* MUTATION TOGGLE in waiting room */
@@ -961,6 +928,10 @@
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap">
       <button class="btn btn-danger" style="width:auto;padding:0.5rem 1.5rem" onclick="glBackToTitle()">← CHANGE NAME</button>
       <button class="btn" style="width:auto;padding:0.5rem 1.5rem;background:rgba(255,0,110,0.15);border:1px solid rgba(255,0,110,0.5);color:#ff006e;" onclick="resetAllSettings()">🗑 RESET SETTINGS</button>
+      <label class="btn btn-secondary" style="width:auto;padding:0.5rem 1.5rem;cursor:pointer;border-color:rgba(0,245,255,0.5);color:#00f5ff">
+        📂 リプレイを開く
+        <input type="file" accept=".tetreplay,.json" style="display:none" onchange="openReplayFromLobby(this)">
+      </label>
     </div>
     <div id="dpad-layout-btn-wrap" style="display:none;margin-top:0.5rem;">
       <button class="btn btn-secondary" style="width:auto;padding:0.5rem 1.5rem;border-color:rgba(255,190,11,0.6);color:#ffbe0b;" onclick="openDpadEditor()">🎮 ボタン配置を設定</button>
@@ -1069,6 +1040,26 @@
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">
+            <label>📦 40 Line Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="fortyline-toggle" onchange="updateRoomSetting('fortyLineMode',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(0,245,255,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">タイムアタック</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
+            <label>⚡ Blitz Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="blitz-toggle" onchange="updateRoomSetting('blitzMode',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(255,0,110,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,0,110,0.5)">2分スコアアタック</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
             <label>🔴 Record Training</label>
             <label class="toggle-switch" style="width:46px;height:24px">
               <input type="checkbox" id="record-training-toggle" onchange="updateRoomSetting('recordTraining',this.checked)">
@@ -1105,29 +1096,19 @@
   </div>
 </div>
 
-<!-- BIG BANG MODE OVERLAY -->
+<!-- ALLSPIN MODE OVERLAY -->
 <div id="allspin-overlay">
-  <!-- タイマー（上中央） -->
-  <div id="allspin-timer-panel">
-    <div class="as-timer-lbl">TIME</div>
-    <div id="allspin-timer">60</div>
-  </div>
-  <!-- お題パネル（上中央） -->
   <div id="allspin-problem-panel">
-    <div class="as-title">🌀 BIG BANG</div>
+    <div class="as-title">🌀 ALLSPIN CHALLENGE</div>
     <div id="allspin-spin-target" style="color:#cc00ff">T-SPIN DOUBLE</div>
     <div id="allspin-hint">Tミノをスピンさせてラインを消そう</div>
-    <div id="allspin-progress">#1</div>
+    <div id="allspin-progress">問題 1 / ∞</div>
   </div>
-  <!-- スコアパネル（右上） -->
   <div id="allspin-score-panel">
-    <div class="as-score-lbl">SCORE</div>
-    <div id="allspin-score-val">0</div>
-    <div class="as-score-lbl" style="margin-top:0.4rem">SPINS</div>
+    <div class="as-score-lbl">SOLVED</div>
     <div id="allspin-solved-count">0</div>
-    <div id="allspin-streak">🔥 0</div>
+    <div id="allspin-streak">🔥 0 streak</div>
   </div>
-  <!-- スピン成功フラッシュ -->
   <div id="allspin-cleared-flash">
     <div class="flash-text" id="allspin-flash-text" style="color:#cc00ff">NICE!</div>
   </div>
@@ -1197,6 +1178,20 @@
         <option value="off">OFF</option>
         <option value="on" selected>ON</option>
       </select>
+    </div>
+    <h2 style="margin-top:1rem">🖼 BACKGROUND</h2>
+    <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">ゲーム画面の背景画像を設定</div>
+    <div class="settings-row" style="flex-direction:column;align-items:flex-start;gap:0.4rem">
+      <label style="cursor:pointer;background:rgba(0,245,255,0.1);border:1px solid rgba(0,245,255,0.3);padding:0.3rem 0.8rem;border-radius:6px;font-size:0.75rem">
+        📂 画像を選択
+        <input type="file" id="bg-image-input" accept="image/*" style="display:none" onchange="setBgImage(this)">
+      </label>
+      <span id="bg-image-name" style="color:rgba(255,255,255,0.35);font-size:0.7rem">未設定</span>
+      <button onclick="clearBgImage()" style="background:rgba(255,0,110,0.1);border:1px solid rgba(255,0,110,0.3);color:#ff006e;padding:0.2rem 0.6rem;border-radius:6px;font-size:0.7rem;cursor:pointer">✕ 削除</button>
+    </div>
+    <div class="settings-row">
+      <label>背景透明度 <span class="settings-val" id="bg-opacity-val">30%</span></label>
+      <input type="range" id="bg-opacity-input" min="0" max="100" value="30" oninput="updateBgOpacity(this.value)">
     </div>
     <h2 style="margin-top:1rem">🖥 UI LAYOUT</h2>
     <div style="color:rgba(255,255,255,0.35);font-size:0.7rem;margin-bottom:0.6rem;letter-spacing:0.05em;">ゲーム画面の枠・数字の位置とサイズ（ゲーム再起動で反映）</div>

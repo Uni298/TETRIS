@@ -46,6 +46,75 @@ function updateSetting(key,val){
   saveSettings();
 }
 function toggleSettings(){document.getElementById('settings-modal').classList.toggle('open');}
+
+// ★ 背景画像機能
+let _bgImageUrl = null;
+let _bgOpacity = 0.30;
+
+function setBgImage(input) {
+  const file = input.files[0]; if (!file) return;
+  if (_bgImageUrl) URL.revokeObjectURL(_bgImageUrl);
+  _bgImageUrl = URL.createObjectURL(file);
+  _applyBgImage();
+  const nameEl = document.getElementById('bg-image-name');
+  if (nameEl) nameEl.textContent = file.name;
+  localStorage.setItem('tetrix_bg_opacity', _bgOpacity);
+}
+
+function clearBgImage() {
+  if (_bgImageUrl) { URL.revokeObjectURL(_bgImageUrl); _bgImageUrl = null; }
+  _bgImageUrl = null;
+  _applyBgImage();
+  const nameEl = document.getElementById('bg-image-name');
+  if (nameEl) nameEl.textContent = '未設定';
+}
+
+function updateBgOpacity(val) {
+  _bgOpacity = parseInt(val) / 100;
+  document.getElementById('bg-opacity-val').textContent = val + '%';
+  _applyBgImage();
+}
+
+function _applyBgImage() {
+  const gameScreen = document.getElementById('game-screen');
+  const pixiContainer = document.getElementById('pixi-container');
+  if (_bgImageUrl) {
+    // game-screenに背景画像を設定
+    if (gameScreen) {
+      gameScreen.style.backgroundImage = `url(${_bgImageUrl})`;
+      gameScreen.style.backgroundSize = 'cover';
+      gameScreen.style.backgroundPosition = 'center';
+      gameScreen.style.backgroundRepeat = 'no-repeat';
+    }
+    // PIXIのcanvasを半透明にして背景を透過
+    const canvas = document.querySelector('#pixi-container canvas');
+    if (canvas) {
+      canvas.style.background = 'transparent';
+      canvas.style.mixBlendMode = 'normal';
+    }
+    // pixiContainerの背景を暗いオーバーレイで調整
+    if (pixiContainer) {
+      pixiContainer.style.background = `rgba(3,7,18,${1 - _bgOpacity})`;
+    }
+    // PIXIアプリのbackgroundを透明に（あれば）
+    if (gameApp && gameApp.renderer) {
+      try {
+        gameApp.renderer.backgroundColor = 0x000000;
+        gameApp.renderer.backgroundAlpha = 0;
+        // canvasのスタイルでopacityを調整
+        if (gameApp.view) gameApp.view.style.background = 'transparent';
+      } catch(e) {}
+    }
+  } else {
+    if (gameScreen) {
+      gameScreen.style.backgroundImage = '';
+      gameScreen.style.background = '';
+    }
+    if (pixiContainer) pixiContainer.style.background = '';
+    const canvas = document.querySelector('#pixi-container canvas');
+    if (canvas) { canvas.style.background = ''; canvas.style.mixBlendMode = ''; }
+  }
+}
 function resetAllSettings(){
   if(!confirm('全ての設定・名前・レイアウトをリセットしますか？')) return;
   document.cookie.split(';').forEach(c=>{
@@ -85,6 +154,12 @@ let _reconnecting=false;
 let shogiMode=false;
 let isSoloGame=false;
 let allspinMode=false;
+let fortyLineMode=false;
+let fortyLineTimer=null; // タイマーのsetInterval ID
+let fortyLineStartTime=0;
+let blitzMode=false;
+let blitzTimer=null;
+let blitzStartTime=0;
 let isSpectator=false; // 観戦モードフラグ
 socket.on('connect',()=>{
   myId=socket.id;
@@ -367,7 +442,8 @@ function returnToRoom(){
   // AllSpinオーバーレイを閉じる
   const ao=document.getElementById('allspin-overlay');if(ao)ao.classList.remove('active');
   asState=null; allspinMode=false;
-  if(gameState){try{gameState.cancelLock();}catch(e){}gameState=null;}
+  _stopFortyLineUI(); fortyLineMode=false;
+  _stopBlitzUI(); blitzMode=false;
   renderer=null;isSpectator=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   const prevRoomId=_lastUsedRoomId;
@@ -393,8 +469,8 @@ function backToLobby(){
   // AllSpinオーバーレイを閉じる
   const ao=document.getElementById('allspin-overlay');if(ao)ao.classList.remove('active');
   asState=null; allspinMode=false;
-  if(gameState){try{gameState.cancelLock();}catch(e){}gameState=null;}
-  renderer=null;isSpectator=false;
+  _stopFortyLineUI(); fortyLineMode=false;
+  _stopBlitzUI(); blitzMode=false;
   if(gameApp){try{gameApp.destroy(true);}catch(e){}gameApp=null;}
   const prevRoomId=roomId||_lastUsedRoomId;
   // ルームから正しく退出
@@ -424,6 +500,25 @@ function showGameLobby(prevRoomId){
   }
   showScreen('game-lobby');
   refreshRooms();
+}
+
+// ロビーからリプレイファイルを開く
+function openReplayFromLobby(input) {
+  const file = input.files[0]; if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = JSON.parse(e.target.result);
+      if (!data.events) throw new Error('Invalid replay file');
+      window._lastReplayData = data;
+      showScreen('game');
+      showDpad(false);
+      openReplayViewer(data);
+    } catch(err) {
+      alert('リプレイファイルの読み込みに失敗しました: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
 }
 
 function refreshRooms(){
@@ -496,7 +591,7 @@ socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,muta
   if(rs){roomSettings={...roomSettings,...rs};}
   document.getElementById('room-id-display').textContent=rid;
   updatePlayerList(players);
-  document.getElementById('start-btn').style.display=isHost&&(players.length>=2||(rs&&(rs.soloMode||rs.allspinMode)&&players.length>=1))?'block':'none';
+  document.getElementById('start-btn').style.display=isHost&&(players.length>=2||(rs&&(rs.soloMode||rs.allspinMode||rs.fortyLineMode)&&players.length>=1))?'block':'none';
   document.getElementById('wait-status').textContent=players.length<2?'Waiting for players... (min 2)':`${players.length} players ready`;
   const mrow=document.getElementById('mutation-row-wrap');
   if(mrow)mrow.style.display=isHost?'flex':'none';
@@ -533,7 +628,7 @@ socket.on('room_update',({players,host,started,mutationMode:mu,mutationSeed:ms,r
   if(!started)resetRoomInactivityTimer();
   else{if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);_removeInactivityBtn();}
   const total=players.length;
-  const isSoloAllowed=rs&&(rs.soloMode||rs.allspinMode);
+  const isSoloAllowed=rs&&(rs.soloMode||rs.allspinMode||rs.fortyLineMode);
   const canStart=isHost&&!started&&(total>=2||(isSoloAllowed&&total>=1));
   document.getElementById('start-btn').style.display=canStart?'block':'none';
   const feb=document.getElementById('force-end-waiting-btn');
@@ -562,7 +657,7 @@ socket.on('spectate_joined',({roomId:rid,players,host})=>{
   container.innerHTML='';
   const W=container.clientWidth||window.innerWidth,H=container.clientHeight||window.innerHeight;
   const res=settings.quality==='minimum'||settings.quality==='low'?1:settings.quality==='medium'?1.5:settings.quality==='ultra'?2.5:2;
-  gameApp=new PIXI.Application({width:W,height:H,backgroundColor:0x030712,antialias:settings.quality!=='minimum'&&settings.quality!=='low',resolution:res,autoDensity:true});
+  gameApp=new PIXI.Application({width:W,height:H,backgroundColor:0x030712,backgroundAlpha:1,transparent:false,antialias:settings.quality!=='minimum'&&settings.quality!=='low',resolution:res,autoDensity:true});
   container.appendChild(gameApp.view);
   gameState=null;
   // 観戦専用レンダラー: 全プレイヤーのボードを均等に並べて表示
@@ -606,6 +701,8 @@ function updateRoomSettingsUI(rs){
   const sg=document.getElementById('shogi-toggle');if(sg)sg.checked=!!(rs.shogiMode);
   const soloTog=document.getElementById('solo-toggle');if(soloTog)soloTog.checked=!!(rs.soloMode);
   const asTog=document.getElementById('allspin-toggle');if(asTog)asTog.checked=!!(rs.allspinMode);
+  const flTog=document.getElementById('fortyline-toggle');if(flTog)flTog.checked=!!(rs.fortyLineMode);
+  const blTog=document.getElementById('blitz-toggle');if(blTog)blTog.checked=!!(rs.blitzMode);
   const recTog=document.getElementById('record-training-toggle');if(recTog)recTog.checked=!!(rs.recordTraining);
   const vo=document.getElementById('settings-view-content');
   if(vo&&rs){
@@ -622,7 +719,7 @@ function getBotLevelLabel(lvl){
 }
 
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','blitzMode'];
   const parsed=boolKeys.includes(key)?(!!val):(parseInt(val)||0);
   roomSettings[key]=parsed;
   socket.emit('set_room_settings',{[key]:parsed});
@@ -651,7 +748,7 @@ function updatePlayerList(players){
 }
 
 // ---- Countdown then start ----
-socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm})=>{
+socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,blitzMode:blm})=>{
   // ゲーム開始時は非アクティブタイマーをクリア
   if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);
   _removeInactivityBtn();
@@ -661,6 +758,8 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   shogiMode=!!sm;
   isSoloGame=!!solo;
   allspinMode=!!asm;
+  fortyLineMode=!!flm;
+  blitzMode=!!blm;
   if(rs)roomSettings={...roomSettings,...rs};
   _pieceCounter=0;
   showScreen('game');
@@ -668,12 +767,18 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   setupDpadButtons();
   if(allspinMode){
     showCountdown(bagSeed,()=>initAllSpinGame(players,bagSeed));
+  } else if(fortyLineMode){
+    showCountdown(bagSeed,()=>initFortyLineGame(players,bagSeed));
+  } else if(blitzMode){
+    showCountdown(bagSeed,()=>initBlitzGame(players,bagSeed));
   } else {
     showCountdown(bagSeed,()=>initGame(players,bagSeed));
   }
   if(sm)addChatSystem('♟ SHOGI MODE: BOT responds to each of your moves!');
   if(solo)addChatSystem('🎮 SOLO MODE — survive as long as possible!');
   if(asm)addChatSystem('🌀 ALLSPIN MODE — スピンをマスターせよ！');
+  if(flm)addChatSystem('📦 40 LINE MODE — 40ラインをできるだけ速くクリア！');
+  if(blm)addChatSystem('⚡ BLITZ MODE — 2分間でスコアを稼げ！');
   if(rs&&rs.recordTraining)addChatSystem('🔴 Recording training data...');
 });
 
@@ -696,7 +801,7 @@ function showCountdown(bagSeed,cb){
   container.innerHTML='';
   const W=container.clientWidth||window.innerWidth,H=container.clientHeight||window.innerHeight;
   const res=settings.quality==='minimum'||settings.quality==='low'?1:settings.quality==='medium'?1.5:settings.quality==='ultra'?2.5:2;
-  gameApp=new PIXI.Application({width:W,height:H,backgroundColor:0x030712,antialias:settings.quality!=='minimum'&&settings.quality!=='low',resolution:res,autoDensity:true});
+  gameApp=new PIXI.Application({width:W,height:H,backgroundColor:0x030712,backgroundAlpha:1,transparent:false,antialias:settings.quality!=='minimum'&&settings.quality!=='low',resolution:res,autoDensity:true});
   gameApp.ticker.maxFPS=0; // 無制限（ブラウザのrAFレートに従う）
   container.appendChild(gameApp.view);
   gameState=new TetrisGame(bagSeed);
@@ -1057,6 +1162,7 @@ class TetrisGame{
     let d=0;while(this.isValid(this.current,0,1)){this.current.y++;d++;}
     this.score+=d*2;SFX.hardDrop();
     renderer&&renderer.onHardDrop(d);
+    ReplayRecorder.record('hard_drop',{dropped:d,pieceType:this.current.type,pieceX:this.current.x,startY:this.current.y-d});
     this.lockPiece();
   }
 
@@ -1092,7 +1198,7 @@ class TetrisGame{
       const ny=this.current.y+r,nx=this.current.x+c;
       if(ny>=0&&ny<ROWS+HIDDEN&&nx>=0&&nx<COLS)this.board[ny][nx]=this.current.type;
     }
-    if(wasSpin){SFX.spinLock();socket.emit('spin_effect',{spinType});renderer&&renderer.onSpinSparkle(this._lockX,this._lockY,this._lockType,spinType);}
+    if(wasSpin){SFX.spinLock();socket.emit('spin_effect',{spinType});ReplayRecorder.record('spin_effect',{spinType});renderer&&renderer.onSpinSparkle(this._lockX,this._lockY,this._lockType,spinType);}
     else SFX.lock();
     this.clearLines();
   }
@@ -1198,9 +1304,11 @@ class TetrisGame{
         const renAtk=renAttackTable[Math.min(this.ren,11)]||5;
         if(this.ren>=2)attack+=renAtk;
       }
-      if(attack>0)socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared});
+      if(attack>0||fortyLineMode)socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines});
       // 相手に視覚エフェクトを送信
-      socket.emit('line_clear_effect',{count,spinType,isB2B:isB2B||false,ren:this.ren,allClear});
+      const lcEv={count,spinType,isB2B:isB2B||false,ren:this.ren,allClear};
+      socket.emit('line_clear_effect',lcEv);
+      ReplayRecorder.record('line_clear_effect',lcEv);
 
       if(count===1)SFX.clear1();
       else if(count===2)SFX.clear2();
@@ -1215,7 +1323,7 @@ class TetrisGame{
       if(this.ren>0){SFX.renReset();}
       this.combo=-1;this.ren=0;
       renderer&&renderer.endComboLabel();
-      // 相手にRENリセットを通知（180スピンもライン消去なしはスピン扱いなし）
+      // 相手にRENリセットを通知
       socket.emit('line_clear_effect',{count:0,spinType:null,isB2B:false,ren:0,allClear:false});
       // ガベージ即時適用（ラインなし時）
       // コンボ中（combo>=1）はゴミを盤面に反映しない
@@ -1258,8 +1366,7 @@ class TetrisGame{
     // ゲームオーバー判定: pendingGameOverまたはスポーン失敗
     if(!this.alive||this._pendingGameOver){
       this.alive=false;this._pendingGameOver=false;
-      if(!allspinMode){socket.emit('game_over');renderer&&renderer.onGameOver();}
-      else{this.alive=true;} // AllSpinモードではゲームオーバーにしない
+      socket.emit('game_over');renderer&&renderer.onGameOver();
     }
   }
 
@@ -1298,17 +1405,24 @@ class TetrisGame{
   }
 
   _emitBoardUpdate(){
-    socket.emit('board_update',{
+    const data = {
       board:this.board.map(row=>row.map(c=>c||0)),
       score:this.score,lines:this.lines,level:this.level,
-      currentPiece:{...this.current},nextPieces:this.nextQueue.slice(0,5),holdPiece:this.holdPiece
-    });
+      currentPiece:{...this.current},nextPieces:this.nextQueue.slice(0,5),holdPiece:this.holdPiece,
+      // リプレイ傾き再現用
+      tiltAngle: renderer ? (renderer.tiltAngle||0) : 0,
+      shakePower: renderer ? (renderer.shakePower||0) : 0,
+      boardOffsetY: renderer ? (renderer.boardOffsetY||0) : 0,
+    };
+    socket.emit('board_update', data);
+    ReplayRecorder.record('board_update', data);
   }
 
   // 現在ミノ位置のみ軽量送信（毎フレーム近い頻度で呼ばれる）
   _emitCurrentPiece(){
     if(!this.current)return;
     socket.emit('piece_update',{currentPiece:{...this.current}});
+    ReplayRecorder.record('piece_update',{currentPiece:{...this.current}});
   }
 
   queueGarbage(lines,fromId){
@@ -1367,7 +1481,7 @@ class TetrisGame{
       if(renderer)renderer._wallBumpActive=false;
       // ゲームオーバー: ホールド後スポーン位置が既存ブロックと重なったら
       if(!this.isValid(this.current)){
-        if(!allspinMode){this.alive=false;socket.emit("game_over");renderer&&renderer.onGameOver();}
+        this.alive=false;socket.emit("game_over");renderer&&renderer.onGameOver();
       }
     }else{
       this.holdPiece=type;
@@ -1432,217 +1546,88 @@ function initGame(players,bagSeed){
 // ==========================================
 
 // 10種類のスピンチャレンジ定義
-// ============================================================
-// BIG BANG MODE (AllSpin Master)
-// ぷよテト ビッグバンモード風:
-//   - 制限時間60秒
-//   - 毎回専用盤面 + お題のスピンを1回決める
-//   - 成功→即座に次の問題（盤面リセット）
-//   - タイムボーナス付きスコア
-//   - 時間切れでゲーム終了・スコア表示
-// ============================================================
-
-// 10種類のスピンチャレンジ
 const ALLSPIN_CHALLENGES = [
-  { id:'tspin_double',  label:'T-SPIN DOUBLE',  targetSpin:'TSPIN',      targetLines:2, color:'#cc00ff', piece:'T', hint:'Tミノ → 2ライン消去のTスピン！' },
-  { id:'tspin_triple',  label:'T-SPIN TRIPLE',  targetSpin:'TSPIN',      targetLines:3, color:'#ff00cc', piece:'T', hint:'T-Spin Triple! 縦穴を狙え' },
-  { id:'tspin_single',  label:'T-SPIN SINGLE',  targetSpin:'TSPIN',      targetLines:1, color:'#dd44ff', piece:'T', hint:'Tミノを横向きで滑り込ませろ' },
-  { id:'mini_tspin',    label:'MINI T-SPIN',    targetSpin:'MINI_TSPIN', targetLines:1, color:'#aa66ff', piece:'T', hint:'ミニTスピンでOK！ 引っかかりを活かせ' },
-  { id:'ispin',         label:'I-SPIN',         targetSpin:'ISPIN',      targetLines:1, color:'#00f5ff', piece:'I', hint:'IミノをSRSキックで縦穴へ！' },
-  { id:'sspin',         label:'S-SPIN',         targetSpin:'SSPIN',      targetLines:1, color:'#8BC34A', piece:'S', hint:'Sミノを着地後に回転させろ！' },
-  { id:'zspin',         label:'Z-SPIN',         targetSpin:'ZSPIN',      targetLines:1, color:'#ff006e', piece:'Z', hint:'Zミノを着地後に回転させろ！' },
-  { id:'lspin',         label:'L-SPIN',         targetSpin:'LSPIN',      targetLines:1, color:'#ff8500', piece:'L', hint:'Lミノのコーナー引っかかりを狙え' },
-  { id:'jspin',         label:'J-SPIN',         targetSpin:'JSPIN',      targetLines:1, color:'#4361ee', piece:'J', hint:'Jミノのコーナー引っかかりを狙え' },
-  { id:'spin180',       label:'180° SPIN',      targetSpin:'SPIN180',    targetLines:1, color:'#ffffff', piece:'T', hint:'Aキー長押しで180°！天井裏へ滑り込め' },
+  {
+    id:'tspin_double', label:'T-SPIN DOUBLE', targetSpin:'TSPIN', targetLines:2,
+    color:'#cc00ff', hint:'Tミノを使って2ライン消去のTスピンを決めろ！',
+    piece:'T'
+  },
+  {
+    id:'tspin_triple', label:'T-SPIN TRIPLE', targetSpin:'TSPIN', targetLines:3,
+    color:'#ff00cc', hint:'T-Spin Tripleを決めよう。縦穴を作れ！',
+    piece:'T'
+  },
+  {
+    id:'tspin_single', label:'T-SPIN SINGLE', targetSpin:'TSPIN', targetLines:1,
+    color:'#dd44ff', hint:'1ライン消去のTスピン。準備の盤面を活かせ！',
+    piece:'T'
+  },
+  {
+    id:'mini_tspin', label:'MINI T-SPIN', targetSpin:'MINI_TSPIN', targetLines:1,
+    color:'#aa66ff', hint:'ミニTスピンでも十分！回転で滑り込め',
+    piece:'T'
+  },
+  {
+    id:'ispin', label:'I-SPIN', targetSpin:'ISPIN', targetLines:1,
+    color:'#00f5ff', hint:'Iミノをキックで回転させながらはめ込め！',
+    piece:'I'
+  },
+  {
+    id:'sspin', label:'S-SPIN', targetSpin:'SSPIN', targetLines:1,
+    color:'#8BC34A', hint:'Sミノを着地後に回転させて消去！',
+    piece:'S'
+  },
+  {
+    id:'zspin', label:'Z-SPIN', targetSpin:'ZSPIN', targetLines:1,
+    color:'#ff006e', hint:'Zミノを着地後に回転させて消去！',
+    piece:'Z'
+  },
+  {
+    id:'lspin', label:'L-SPIN', targetSpin:'LSPIN', targetLines:1,
+    color:'#ff8500', hint:'Lミノを底に沿わせてスピン。タイミングが鍵！',
+    piece:'L'
+  },
+  {
+    id:'jspin', label:'J-SPIN', targetSpin:'JSPIN', targetLines:1,
+    color:'#4361ee', hint:'Jミノのスピンを決めよう！',
+    piece:'J'
+  },
+  {
+    id:'spin180', label:'180° SPIN', targetSpin:'SPIN180', targetLines:1,
+    color:'#ffffff', hint:'Aキーで180°回転させながらラインを消去！',
+    piece:null // any
+  },
 ];
 
-// 各スピン用の単発盤面（1スピンで1ライン以上消える状態）
-// rows: 20行×10列、0=空 1=ブロック
-const BIGBANG_BOARDS = {
-  tspin_double: [
-    // TSDスロット（右端）
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],
-      [1,1,1,1,1,1,1,0,1,1], // ←ここにTが入る
-      [1,1,1,1,1,1,0,0,0,1],
-      [1,1,1,1,1,1,1,0,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:2, spawnX:6 },
-    // TSDスロット（左端）
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],
-      [1,1,0,1,1,1,1,1,1,1],
-      [1,0,0,0,1,1,1,1,1,1],
-      [1,1,0,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:2, spawnX:1 },
-  ],
-  tspin_triple: [
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],
-      [1,1,1,1,0,1,1,1,1,1], // TST slot
-      [1,1,1,0,0,0,1,1,1,1],
-      [1,1,1,1,0,1,1,1,1,1],
-      [1,1,1,0,0,1,1,1,1,1],
-      [1,1,1,1,0,1,1,1,1,1],
-      [1,1,1,0,0,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:0, spawnX:3 },
-  ],
-  tspin_single: [
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,0,1,1,1,1,1,1,1,1], // TSSスロット（rot=1で右から）
-      [0,0,0,1,1,1,1,1,1,1],
-      [1,0,1,1,1,1,1,1,1,1],
-    ], spawnRot:1, spawnX:0 },
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,1,1,1,1,1,1,1,0,1], // rot=3で左から
-      [1,1,1,1,1,1,0,0,0,1],
-      [1,1,1,1,1,1,1,1,0,1],
-    ], spawnRot:3, spawnX:6 },
-  ],
-  mini_tspin: [
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,1,1,1,1,1,1,0,0,1], // mini-T slot: Tをrot=0で落としてkick→mini
-      [1,1,1,1,1,1,0,0,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:0, spawnX:5 },
-  ],
-  ispin: [
-    // 縦穴にIをkickで入れる
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,0,1,1,1,1,1,1,1,1], // overhangで縦穴
-      [0,0,1,1,1,1,1,1,1,1],
-      [0,0,1,1,1,1,1,1,1,1],
-      [0,0,1,1,1,1,1,1,1,1],
-      [1,0,1,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:0, spawnX:0 },
-    // 横スリット
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],
-      [1,0,0,0,0,1,1,1,1,1], // 横スリット（rot=1縦Iを左回転でkick）
-      [1,1,1,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:1, spawnX:0 },
-  ],
-  sspin: [
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,1,0,0,1,1,1,1,1,1], // Sをrot=1縦向きで着地→左回転
-      [1,0,0,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:1, spawnX:1 },
-  ],
-  zspin: [
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,0,0,1,1,1,1,1,1,1], // Zをrot=1縦向きで着地→左回転
-      [1,1,0,0,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:1, spawnX:1 },
-  ],
-  lspin: [
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,1,1,0,0,0,1,1,1,1], // Lをrot=0で着地→右回転kick
-      [1,1,1,1,1,0,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:0, spawnX:3 },
-  ],
-  jspin: [
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,1,1,0,0,0,1,1,1,1], // Jをrot=0で着地→左回転kick
-      [1,1,1,0,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:0, spawnX:3 },
-  ],
-  spin180: [
-    { rows:[
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],
-      [1,0,1,1,1,1,1,1,1,1], // 180: overhangの下にTが潜り込む
-      [0,0,0,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-      [1,1,1,1,1,1,1,1,1,1],
-    ], spawnRot:0, spawnX:0 },
-  ],
-};
+// ============================================================
+// AllSpin 盤面パターン定義
+//
+// 設計規則:
+//   - rows配列: 各要素が盤面1行（HIDDEN=3行目〜22行目 = board[3..22]）
+//     インデックス0=rows[0]が最上段(board[HIDDEN]=board[3])
+//     インデックス19=最下段(board[22])
+//   - 0=空セル、1=ブロック（後でランダム色で着色）
+//   - 10列固定
+//   - spinCount: NEXTに詰めるミノ数（連続スピン回数）
+//   - piece: 使うミノ種
+//   - hint: 操作ガイド
+//
+// 各スピンのSRS/着地条件:
+//   T-spin: Tピース回転後に「前面コーナー2つが埋まっている」
+//   S-spin: Sピースが着地状態で回転（回転後に下にブロック/床）
+//   Z-spin: Zピースが着地状態で回転
+//   L-spin: Lピースが着地状態で回転
+//   J-spin: Jピースが着地状態で回転
+//   I-spin: Iピースがkickを使って回転
+//   180-spin: 180°回転（Aキー）でkickして滑り込む
+// ============================================================
 
-// 盤面rowsをboard配列に変換
-function makeBigBangBoard(rows, rng) {
+// 盤面をboard配列（ROWS+HIDDEN行×COLS列）に変換する
+// rows: 20行分（上→下）、0=空 1=ブロック
+function makeBoardFromRows(rows, rng) {
   const colors = ['I','L','J','S','Z','T','O'];
   const b = Array.from({length:ROWS+HIDDEN}, ()=>Array(COLS).fill(0));
-  for(let i=0;i<Math.min(rows.length,ROWS);i++){
+  for(let i=0;i<rows.length&&i<ROWS;i++){
     const boardRow = HIDDEN + i;
     for(let c=0;c<COLS;c++){
       if(rows[i][c]) b[boardRow][c] = colors[Math.floor(rng()*colors.length)];
@@ -1651,260 +1636,1679 @@ function makeBigBangBoard(rows, rng) {
   return b;
 }
 
-// BIG BANGゲーム状態
-let asState = null;
+// ============================================================
+// 各チャレンジのパターンリスト
+// patterns配列: 複数バリエーションをランダム選択
+// ============================================================
+const ALLSPIN_PATTERNS = {
 
-// BIG BANG定数
-const BIGBANG_DURATION = 60000; // 60秒
-const BIGBANG_BASE_SCORE = 1000; // 1スピンあたりの基本スコア
-const BIGBANG_TIME_BONUS_PER_SEC = 50; // 残り時間×50点ボーナス
+  // ─────────────────────────────────────────────────
+  // T-SPIN DOUBLE: T字穴を横4〜5箇所連続
+  // Tミノ rot=2 (▽)で下から滑り込む。
+  // 穴: 上2行で[1,0,1]、下1行で[0,0,0] → T字
+  // 穴の横には必ずブロックで支持
+  // ─────────────────────────────────────────────────
+  tspin_double: [
+    {
+      // 右寄りT字穴×5列（交互TSD連続）
+      // 各穴: 行A=[..1,0,1..] 行B=[..0,0,0..] の2行ペア
+      // 穴位置(中心x): 1,3,5,7 の4箇所
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,1,1,1,1],  // 穴A: x=1 (left slot)
+        [0,0,0,1,0,0,0,1,1,1],  // 穴B: x=1
+        [1,0,1,1,1,0,1,1,1,1],  // 穴A: x=5 (right slot) / x=1 continuation
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+    {
+      // 左半分: T字穴×3、右壁塞ぎ
+      // rot=1 (▷) で右から入るTSD
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,1,0,0,0,1,1],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,1,0,0,0,1,1],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,0,1,0,0,0,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // T-SPIN TRIPLE: 深い縦穴（3行使う）
+  // rot=0 (△) で上からキックで入る、あるいは
+  // rot=2 (▽) で底のキックで3行全消し
+  // 穴形状: 上1行[1,0,1] 中1行[0,0,0] 下1行[1,0,1]
+  // 実際には "overhang + TSD" 的な形
+  // ─────────────────────────────────────────────────
+  tspin_triple: [
+    {
+      // T-spin Triple用: タワー穴×3
+      // 各穴: 3行深で1本の縦穴+overhang
+      // 穴位置: c=1, c=5 の2箇所
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [0,0,1,1,0,0,1,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [0,0,1,1,0,0,1,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [0,0,1,1,0,0,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // T-SPIN SINGLE: 1ライン消去のTスピン
+  // rot=3 (◁) or rot=1 (▷) で横から挟む
+  // 穴: [1,0,0,0] の1行（Tが横向きで入る）
+  // ─────────────────────────────────────────────────
+  tspin_single: [
+    {
+      // 左壁からのTSS: rot=1 (▷向き) で左から差し込む
+      // 穴: c=0〜2 に [0,0,0]、c=3に壁
+      // 2行でペア: 上[1,0,1,1,...] 下[0,0,0,1,...]
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // MINI T-SPIN: kick1つ（0→R or 0→L）で滑り込む
+  // 穴形状: [0,0,1] + [0,1,1] → Tが引っかかる形
+  // ─────────────────────────────────────────────────
+  mini_tspin: [
+    {
+      // ミニTSS: 左コーナー引っかかりパターン
+      // Tをrot=0で落として、左回転(→rot=3)でL字に滑り込む
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,1,0,0,1,0,0,1,0],
+        [0,1,1,0,1,1,0,1,1,0],
+        [1,1,1,1,1,1,1,1,1,1],
+        [0,0,1,0,0,1,0,0,1,0],
+        [0,1,1,0,1,1,0,1,1,0],
+        [1,1,1,1,1,1,1,1,1,1],
+        [0,0,1,0,0,1,0,0,1,0],
+        [0,1,1,0,1,1,0,1,1,0],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // I-SPIN: IミノをSRSキックで縦穴に入れる
+  // KICK_I '0->1' or '2->3' の第3・4キックで
+  // 縦向きIが横穴に滑り込む
+  //
+  // 最も代表的: 横向きI(rot=0)を右回転(→rot=1)するとき
+  // kick3: [-2,-1]（左2、上1）で狭い縦穴に入る
+  //
+  // 盤面: 縦3マスの穴を横に4〜5個並べる
+  // 穴の上はoverhang（天井）で1マス塞ぐ
+  // ─────────────────────────────────────────────────
+  ispin: [
+    {
+      // I-spin: 縦穴4連 (overhang付き)
+      // 穴: c=1〜3（幅1、深さ4） overhangがc=1上端を塞ぐ
+      // Iをrot=0で上に置き、右回転(kick3)で縦穴へ
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,0,1,0,1,0,1,1],  // overhang: 偶数列に天井
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,0,1,0,1,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,0,1,0,1,0,1,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+    {
+      // I-spin variant: 横向きに狭い穴を横から差し込む
+      // rot=1(縦)のIを左回転(→rot=0)で幅1の隙間に水平に入れる
+      // 穴: 1行だけ空いた行を4〜6個並べる
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,0,0,1,1,1,1,1],  // 左端から横向きIを差し込む穴
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,0,0,0,0,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // S-SPIN: Sミノ着地後に回転してライン消去
+  // SRSなし（着地状態での回転判定）
+  //
+  // Sミノ rot=0:
+  //   [0,1,1]
+  //   [1,1,0]
+  // Sミノ rot=1 (右回転後):
+  //   [0,1,0]
+  //   [0,1,1]
+  //   [0,0,1]
+  //
+  // 実用的なS-spin:
+  // 段差構造で rot=0 Sを着地→右回転(rot=1)でライン消去
+  // 穴: 2行で [1,1,0,0,1,1,1,1,1,1] と [1,0,0,1,1,1,1,1,1,1]
+  // ─────────────────────────────────────────────────
+  sspin: [
+    {
+      // S-spin: 段差穴を左から右へ5連続
+      // 各穴は2行使用、左ずつシフト
+      // Sをrot=1(縦向き)で着地後、左回転(→rot=0)で横ラインに
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // Z-SPIN: Zミノ着地後に回転
+  // Zミノ rot=0:
+  //   [1,1,0]
+  //   [0,1,1]
+  // Zミノ rot=1 (右回転後):
+  //   [0,0,1]
+  //   [0,1,1]
+  //   [0,1,0]
+  //
+  // S-spinの鏡像パターン
+  // ─────────────────────────────────────────────────
+  zspin: [
+    {
+      // Z-spin: 段差穴（Sの逆）
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // L-SPIN: Lミノ着地後に回転
+  // Lミノ rot=2:
+  //   [0,0,0]
+  //   [1,1,1]
+  //   [1,0,0]
+  // 右回転(→rot=3):
+  //   [1,1,0]
+  //   [0,1,0]
+  //   [0,1,0]
+  //
+  // 使いやすいL-spin:
+  // Lをrot=1(縦右)で着地、右回転(→rot=2)で横ラインへ
+  // rot=1:
+  //   [0,1,0]
+  //   [0,1,0]
+  //   [0,1,1]
+  // ─────────────────────────────────────────────────
+  lspin: [
+    {
+      // L-spin: コーナー引っかかり×6
+      // rot=1(縦)で着地→右回転(rot=2)でライン消去
+      // 穴の形: 右コーナーがあるL字穴
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,1,0,0,1,0,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,0,1,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,0,1,1],
+        [0,0,1,0,0,1,0,0,1,1],
+        [0,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // J-SPIN: Jミノ着地後に回転（Lの鏡像）
+  // Jミノ rot=3(縦左)で着地→左回転(rot=2)でライン消去
+  // rot=3:
+  //   [1,1,0]
+  //   [0,1,0]
+  //   [0,1,0]
+  // ─────────────────────────────────────────────────
+  jspin: [
+    {
+      // J-spin: 左コーナー引っかかり×6
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,1,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,1],
+        [1,0,1,1,1,1,1,1,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,1],
+        [1,0,1,1,1,1,1,1,1,1],
+        [1,0,0,1,0,0,1,0,0,1],
+        [1,0,0,0,0,0,0,0,0,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+
+  // ─────────────────────────────────────────────────
+  // 180° SPIN: Tミノ180°（Aキー）で天井裏に滑り込む
+  // rot=0(△)→rot=2(▽)で天井のある穴に入る
+  // kick180テーブル: [[0,0],[1,0],[-1,0],[0,1],[1,1],[-1,1]]
+  // 穴形状: 上overhang + 下3マス空き（T字型、上が塞がれた形）
+  // ─────────────────────────────────────────────────
+  spin180: [
+    {
+      // 180 T-spin: overhang穴×5
+      // Tをrot=0で穴の上に置き、Aで180回転してoverhangの下に入る
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,1,1,1,0,1,1,1,1],  // overhang (天井)
+        [0,0,0,1,0,0,0,1,1,1],  // 穴（T字の下）
+        [1,1,1,1,1,0,1,1,1,1],  // 仕切り
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,1,1,1,1,0,1,1,1,1],
+        [1,0,1,1,1,0,1,1,1,1],
+        [0,0,0,1,0,0,0,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+    {
+      // 180 J-spin: Jミノ180°でoverhangの下へ
+      rows: [
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0,0],
+        [1,0,0,1,1,0,0,1,1,1],  // overhang
+        [0,0,0,0,0,0,0,0,1,1],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,1,1,0,0,1,1,1],
+        [0,0,0,0,0,0,0,0,1,1],
+        [1,1,0,1,1,1,0,1,1,1],
+        [1,0,0,1,1,0,0,1,1,1],
+        [0,0,0,0,0,0,0,0,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+        [1,1,1,1,1,1,1,1,1,1],
+      ],
+      spinCount: 6,
+    },
+  ],
+};
+
+// =====================================================
+// ===== 40 LINE MODE ==================================
+// テトリスの「40ライン」モード:
+//   - 40ライン消去タイムアタック
+//   - ゴミなし・ソロプレイ
+//   - 残りライン数と経過タイムをリアルタイム表示
+//   - 達成時にタイムを表示してゲーム終了
+// =====================================================
+
+function initFortyLineGame(players, bagSeed) {
+  setupInput();
+
+  fortyLineStartTime = performance.now();
+  fortyLineMode = true;
+
+  // リプレイ記録開始
+  ReplayRecorder.start({
+    players,
+    bagSeed,
+    myId,
+    playerName: myName,
+    roomPlayers: [...roomPlayers],
+    mode: 'fortyline'
+  });
+
+  // タイマーUIを作成
+  _createFortyLineUI();
+  // ボード背後オーバーレイを有効化
+  if (renderer && renderer._modeOverlayText) {
+    renderer._modeOverlayText.text = '40';
+    renderer._modeOverlayText.style.fill = '#ffffff33';
+    renderer._modeOverlayText.visible = true;
+    if (renderer._modeOverlaySubText) { renderer._modeOverlaySubText.text = '00:00.0'; renderer._modeOverlaySubText.visible = true; }
+  }
+
+  // タイマー更新ループ
+  fortyLineTimer = setInterval(() => {
+    if (!fortyLineMode || !gameState || !gameState.alive) return;
+    _updateFortyLineUI();
+  }, 16);
+
+  // ゲームループ
+  let lastTime = performance.now();
+  let lastEmit = 0;
+  const EMIT_INTERVAL = 50;
+  gameApp.ticker.add(() => {
+    const now = performance.now();
+    const rawDt = Math.min(now - lastTime, 100);
+    lastTime = now;
+    if (gameState && gameState.alive) {
+      gameState.updateGravity(rawDt);
+      if (now - lastEmit >= EMIT_INTERVAL) {
+        lastEmit = now;
+        gameState._emitCurrentPiece();
+      }
+    }
+    renderer && renderer.update(rawDt * ANIM_SPEED);
+  });
+}
+
+function _createFortyLineUI() {
+  // 上部の小さなオーバーレイは廃止。ボード後ろに大きく薄く表示
+  const old = document.getElementById('fortyliner-overlay');
+  if (old) old.remove();
+  // PIXIのGraphics/Textはrendererが持つので、ここではDOMではなくrenderer経由で作る
+  _updateFortyLineUI();
+}
+
+function _updateFortyLineUI() {
+  const remaining = Math.max(0, 40 - (gameState ? gameState.lines : 0));
+  const elapsed = performance.now() - fortyLineStartTime;
+  const mins = Math.floor(elapsed / 60000);
+  const secs = Math.floor((elapsed % 60000) / 1000);
+  const tenths = Math.floor((elapsed % 1000) / 100);
+  if (renderer && renderer._modeOverlayText) {
+    renderer._modeOverlayText.text = String(remaining).padStart(2, '0');
+    const fillCol = remaining <= 10 ? '#ff006e55' : remaining <= 20 ? '#ffffff44' : '#ffffff33';
+    renderer._modeOverlayText.style = new PIXI.TextStyle({
+      fontFamily: 'Orbitron, sans-serif',
+      fontSize: Math.round(BOARD_W * 0.55),
+      fill: fillCol,
+      fontWeight: '900',
+      align: 'center',
+    });
+    renderer._modeOverlayText.anchor.set(0.5);
+    if (renderer._modeOverlaySubText) {
+      renderer._modeOverlaySubText.text = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}.${tenths}`;
+    }
+  }
+  // クライアント側で即座にタイマー停止（サーバー応答待ちなしで遅延ゼロ）
+  if (remaining <= 0 && fortyLineTimer) {
+    clearInterval(fortyLineTimer);
+    fortyLineTimer = null;
+  }
+}
+
+function _stopFortyLineUI() {
+  if (fortyLineTimer) { clearInterval(fortyLineTimer); fortyLineTimer = null; }
+  if (renderer && renderer._modeOverlayText) {
+    try { renderer._modeOverlayText.visible = false; } catch(e) {}
+  }
+}
+
+// サーバーから40ライン達成通知を受信
+socket.on('forty_line_clear', ({ playerName, elapsedMs }) => {
+  _stopFortyLineUI();
+  fortyLineMode = false;
+
+  // リプレイ記録を停止
+  ReplayRecorder.stop(elapsedMs);
+
+  // 達成タイムを表示してからリプレイUIを開く
+  const mins = Math.floor(elapsedMs / 60000);
+  const secs = Math.floor((elapsedMs % 60000) / 1000);
+  const ms = Math.floor((elapsedMs % 1000) / 10);
+  const timeStr = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}.${String(ms).padStart(2,'0')}`;
+
+  // 達成フラッシュ演出
+  const flash = document.createElement('div');
+  flash.style.cssText = `
+    position:fixed;top:0;left:0;width:100%;height:100%;
+    background:rgba(0,0,0,0.85);z-index:10000;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    font-family:monospace;color:#fff;pointer-events:none;
+  `;
+  flash.innerHTML = `
+    <div style="font-size:48px;font-weight:bold;color:#00f5ff;letter-spacing:4px;">40 LINES!</div>
+    <div style="font-size:28px;color:#ffd700;margin-top:16px;">${timeStr}</div>
+    <div style="font-size:16px;color:#aaa;margin-top:8px;">${playerName}</div>
+  `;
+  document.body.appendChild(flash);
+  setTimeout(() => {
+    flash.remove();
+    // リプレイUIを表示
+    showReplayUI(ReplayRecorder.export(), elapsedMs, playerName);
+  }, 3000);
+});
+
+// =====================================================
+// ===== BLITZ MODE ====================================
+// 2分間でスコアを競うタイムアタックモード
+// =====================================================
+
+function initBlitzGame(players, bagSeed) {
+  setupInput();
+  blitzStartTime = performance.now();
+  blitzMode = true;
+
+  // リプレイ記録開始
+  ReplayRecorder.start({
+    players, bagSeed, myId, playerName: myName,
+    roomPlayers: [...roomPlayers],
+    mode: 'blitz'
+  });
+
+  _createBlitzUI();
+  // ボード背後オーバーレイを有効化
+  if (renderer && renderer._modeOverlayText) {
+    renderer._modeOverlayText.text = '2:00';
+    renderer._modeOverlayText.style.fill = '#ffffff2a';
+    renderer._modeOverlayText.visible = true;
+    if (renderer._modeOverlaySubText) { renderer._modeOverlaySubText.text = '0'; renderer._modeOverlaySubText.visible = true; }
+  }
+  const _blitzClientTimeout = setTimeout(() => {
+    if (!blitzMode) return;
+    const finalScore = gameState ? gameState.score : 0;
+    blitzMode = false;
+    _stopBlitzUI();
+    ReplayRecorder.stop(120000);
+    showBlitzReplayUI(ReplayRecorder.export(), finalScore, myName);
+  }, 120500); // 120.5秒（サーバーより少し遅らせる）
+  // タイムアウトIDをグローバルに保持してblitz_endで解除できるように
+  window._blitzClientTimeout = _blitzClientTimeout;
+  blitzTimer = setInterval(() => {
+    if (!blitzMode || !gameState || !gameState.alive) return;
+    _updateBlitzUI();
+  }, 16);
+
+  let lastTime = performance.now();
+  let lastEmit = 0;
+  const EMIT_INTERVAL = 50;
+  gameApp.ticker.add(() => {
+    const now = performance.now();
+    const rawDt = Math.min(now - lastTime, 100);
+    lastTime = now;
+    if (gameState && gameState.alive) {
+      gameState.updateGravity(rawDt);
+      if (now - lastEmit >= EMIT_INTERVAL) {
+        lastEmit = now;
+        gameState._emitCurrentPiece();
+      }
+    }
+    renderer && renderer.update(rawDt * ANIM_SPEED);
+  });
+}
+
+function _createBlitzUI() {
+  // 上部オーバーレイは廃止。ボード後ろに大きく薄く表示
+  const old = document.getElementById('blitz-overlay');
+  if (old) old.remove();
+  _updateBlitzUI();
+}
+
+function _updateBlitzUI() {
+  const elapsed = performance.now() - blitzStartTime;
+  const remaining = Math.max(0, 120000 - elapsed);
+  const mins = Math.floor(remaining / 60000);
+  const secs = Math.floor((remaining % 60000) / 1000);
+  if (renderer && renderer._modeOverlayText) {
+    renderer._modeOverlayText.text = `${mins}:${String(secs).padStart(2,'0')}`;
+    const fillCol = remaining < 10000 ? '#ff006e55' : remaining < 30000 ? '#ffffff44' : '#ffffff2a';
+    renderer._modeOverlayText.style = new PIXI.TextStyle({
+      fontFamily: 'Orbitron, sans-serif',
+      fontSize: Math.round(BOARD_W * 0.42),
+      fill: fillCol,
+      fontWeight: '900',
+      align: 'center',
+    });
+    renderer._modeOverlayText.anchor.set(0.5);
+    if (renderer._modeOverlaySubText) {
+      renderer._modeOverlaySubText.text = gameState ? gameState.score.toLocaleString() : '0';
+    }
+  }
+  // クライアント側で即座にタイマー停止（遅延ゼロ）
+  if (remaining <= 0 && blitzTimer) {
+    clearInterval(blitzTimer);
+    blitzTimer = null;
+  }
+}
+
+function _stopBlitzUI() {
+  if (blitzTimer) { clearInterval(blitzTimer); blitzTimer = null; }
+  // PIXIテキストはrenderer破棄時に消える（DOM要素なし）
+  if (renderer && renderer._modeOverlayText) {
+    try { renderer._modeOverlayText.visible = false; } catch(e) {}
+  }
+}
+
+// サーバーからBlitz終了通知を受信
+socket.on('blitz_end', ({ winner, winnerName, scores, elapsedMs }) => {
+  if (window._blitzClientTimeout) { clearTimeout(window._blitzClientTimeout); window._blitzClientTimeout = null; }
+  _stopBlitzUI();
+  blitzMode = false;
+
+  const finalScore = gameState ? gameState.score : 0;
+  ReplayRecorder.stop(120000, finalScore);
+
+  // フラッシュ演出
+  const flash = document.createElement('div');
+  flash.style.cssText = `
+    position:fixed;top:0;left:0;width:100%;height:100%;
+    background:rgba(0,0,0,0.88);z-index:10000;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    font-family:Orbitron,sans-serif;color:#fff;pointer-events:none;
+  `;
+  const sortedScores = [...scores].sort((a,b)=>b.score-a.score);
+  const scoreRows = sortedScores.map(s => `<div style="color:${s.id===myId?'#00f5ff':'#aaa'};font-size:14px;margin:4px 0">${s.name}: ${s.score.toLocaleString()}</div>`).join('');
+  flash.innerHTML = `
+    <div style="font-size:42px;font-weight:bold;color:#ff006e;letter-spacing:4px;">⚡ BLITZ END!</div>
+    <div style="font-size:22px;color:#ffd700;margin-top:12px;">${winnerName}</div>
+    <div style="margin-top:16px;">${scoreRows}</div>
+  `;
+  document.body.appendChild(flash);
+  setTimeout(() => {
+    flash.remove();
+    showBlitzReplayUI(ReplayRecorder.export(), finalScore, myName);
+  }, 3000);
+});
+
+function showBlitzReplayUI(replayData, finalScore, playerName) {
+  const o = document.getElementById('result-overlay');
+  const rc = o.querySelector('.result-card');
+
+  rc.innerHTML = `
+    <div class="result-title" style="color:#ff006e">⚡ BLITZ RESULT</div>
+    <div class="result-winner" style="color:#ffd700;font-size:1.6rem;margin:0.5rem 0">${finalScore.toLocaleString()} pts</div>
+    <div style="color:#aaa;font-size:0.8rem;margin-bottom:1rem">${playerName}</div>
+
+    <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap;margin-bottom:1rem">
+      <button class="btn btn-secondary" onclick="BlitzReplayUI.watchReplay()" style="font-size:0.75rem;padding:0.5rem 1rem">▶ リプレイを見る</button>
+      <button class="btn btn-secondary" onclick="BlitzReplayUI.saveReplay()" style="font-size:0.75rem;padding:0.5rem 1rem">💾 保存</button>
+      <label class="btn btn-secondary" style="font-size:0.75rem;padding:0.5rem 1rem;cursor:pointer">
+        📂 読み込む
+        <input type="file" accept=".tetreplay,.json" style="display:none" onchange="BlitzReplayUI.loadFromFile(this)">
+      </label>
+    </div>
+
+    <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="returnToRoom()" style="font-size:0.75rem">RETURN TO ROOM</button>
+      <button class="btn btn-secondary" onclick="backToLobby()" style="font-size:0.75rem">BACK TO LOBBY</button>
+    </div>
+  `;
+  o.classList.add('open');
+  window._lastReplayData = replayData;
+}
+
+const BlitzReplayUI = {
+  watchReplay() {
+    const data = window._lastReplayData;
+    if (!data || !data.events || data.events.length === 0) { alert('リプレイデータがありません'); return; }
+    document.getElementById('result-overlay').classList.remove('open');
+    openBlitzReplayViewer(data);
+  },
+  saveReplay() {
+    const data = window._lastReplayData;
+    if (!data) return;
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const score = data.meta && data.meta.finalScore ? data.meta.finalScore : 0;
+    a.href = url; a.download = `tetrix_blitz_${score}.tetreplay`;
+    a.click(); URL.revokeObjectURL(url);
+  },
+  loadFromFile(input) {
+    const file = input.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (!data.events) throw new Error('Invalid replay file');
+        window._lastReplayData = data;
+        document.getElementById('result-overlay').classList.remove('open');
+        openBlitzReplayViewer(data);
+      } catch(err) {
+        alert('リプレイファイルの読み込みに失敗しました: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  }
+};
+
+function openBlitzReplayViewer(replayData) {
+  // 40ラインのビューワーを再利用（blitz用ラベルを追加）
+  openReplayViewer(replayData, 'blitz');
+}
+
+// =====================================================
+// ===== REPLAY SYSTEM =================================
+// 40ラインモード専用リプレイシステム
+// - ゲーム中の全イベントをタイムスタンプ付きで記録
+// - 記録終了後にファイル保存 / 読み込み / 再生が可能
+// - 再生中はPixiJSレンダラーを使いリアルタイム速度で描画
+// =====================================================
+
+const ReplayRecorder = (() => {
+  let _events = [];
+  let _startTime = 0;
+  let _recording = false;
+  let _meta = {};
+
+  function start(meta) {
+    _events = [];
+    _startTime = performance.now();
+    _recording = true;
+    _meta = { ...meta, recordedAt: Date.now() };
+  }
+
+  function record(type, data) {
+    if (!_recording) return;
+    _events.push({ t: performance.now() - _startTime, type, data });
+  }
+
+  function stop(elapsedMs, finalScore) {
+    _recording = false;
+    _meta.elapsedMs = elapsedMs;
+    if (finalScore !== undefined) _meta.finalScore = finalScore;
+    else if (gameState) _meta.finalScore = gameState.score;
+  }
+
+  function export_() {
+    return { meta: { ..._meta }, events: _events.map(e => ({ ...e, data: JSON.parse(JSON.stringify(e.data)) })) };
+  }
+
+  function isRecording() { return _recording; }
+
+  return { start, record, stop, export: export_, isRecording };
+})();
+
+// リプレイプレイヤー
+const ReplayPlayer = (() => {
+  let _replay = null;
+  let _paused = false;
+  let _speed = 1.0;
+  let _currentIdx = 0;
+  let _startWallTime = 0;
+  let _startReplayTime = 0;
+  let _timer = null;
+  let _onEventCb = null;
+  let _onDoneCb = null;
+  let _onProgressCb = null;
+
+  function load(replayData) {
+    _replay = replayData;
+    _currentIdx = 0;
+    _paused = true;
+  }
+
+  function play(onEvent, onDone, onProgress) {
+    if (!_replay) return;
+    _onEventCb = onEvent;
+    _onDoneCb = onDone;
+    _onProgressCb = onProgress;
+    _currentIdx = 0;
+    _paused = false;
+    _startWallTime = performance.now();
+    _startReplayTime = 0;
+    _tick();
+  }
+
+  function pause() {
+    if (!_paused) {
+      // 現在のreplayT位置を保存してからpause
+      const wallElapsed = performance.now() - _startWallTime;
+      _startReplayTime = _startReplayTime + wallElapsed * _speed;
+      _startWallTime = performance.now();
+    }
+    _paused = true;
+    if (_timer) { cancelAnimationFrame(_timer); _timer = null; }
+  }
+  function resume() {
+    if (_paused) {
+      _paused = false;
+      // replayT = _startReplayTime + wallElapsed * _speed
+      // wallElapsed = (replayT - _startReplayTime) / _speed
+      // When resuming, replayT stays at _startReplayTime (current position)
+      // so wallElapsed = 0, meaning _startWallTime = now
+      _startWallTime = performance.now();
+      // _startReplayTime already holds current replay position
+      _tick();
+    }
+  }
+  function setSpeed(s) {
+    if (!_paused) {
+      // Adjust _startReplayTime to current position before changing speed
+      const wallElapsed = performance.now() - _startWallTime;
+      _startReplayTime = _startReplayTime + wallElapsed * _speed;
+      _startWallTime = performance.now();
+    }
+    _speed = s;
+  }
+  function stop() { _paused = true; if (_timer) { cancelAnimationFrame(_timer); _timer = null; } _currentIdx = 0; _replay = null; }
+
+  function seekTo(pct) {
+    if (!_replay) return;
+    const targetT = (_replay.meta.elapsedMs || 0) * pct;
+    const wasPlaying = !_paused;
+    // Stop current tick
+    if (_timer) { cancelAnimationFrame(_timer); _timer = null; }
+    _paused = true;
+    // Reset to beginning and apply all events up to targetT
+    _currentIdx = 0;
+    // Apply events up to target time
+    // First reset game state by re-applying from start
+    while (_currentIdx < _replay.events.length && _replay.events[_currentIdx].t <= targetT) {
+      _onEventCb && _onEventCb(_replay.events[_currentIdx]);
+      _currentIdx++;
+    }
+    _startReplayTime = targetT;
+    _startWallTime = performance.now();
+    if (wasPlaying) {
+      _paused = false;
+      _tick();
+    }
+  }
+
+  function _tick() {
+    if (_paused || !_replay) return;
+    const wallElapsed = performance.now() - _startWallTime;
+    const replayT = _startReplayTime + wallElapsed * _speed;
+
+    while (_currentIdx < _replay.events.length && _replay.events[_currentIdx].t <= replayT) {
+      _onEventCb && _onEventCb(_replay.events[_currentIdx]);
+      _currentIdx++;
+    }
+
+    const totalMs = _replay.meta.elapsedMs || 1;
+    _onProgressCb && _onProgressCb(Math.min(replayT / totalMs, 1), replayT);
+
+    if (_currentIdx >= _replay.events.length && replayT >= totalMs) {
+      _paused = true;
+      _onDoneCb && _onDoneCb();
+      return;
+    }
+
+    _timer = requestAnimationFrame(_tick);
+  }
+
+  function _getCurT() {
+    if (_paused) return _startReplayTime;
+    const wallElapsed = performance.now() - _startWallTime;
+    return _startReplayTime + wallElapsed * _speed;
+  }
+
+  return { load, play, pause, resume, setSpeed, stop, seekTo, get paused() { return _paused; }, _getCurT };
+})();
+
+// リプレイUIを表示
+function showReplayUI(replayData, elapsedMs, playerName) {
+  // result-overlayを流用してリプレイUIを表示
+  const o = document.getElementById('result-overlay');
+  const rc = o.querySelector('.result-card');
+
+  const mins = Math.floor(elapsedMs / 60000);
+  const secs = Math.floor((elapsedMs % 60000) / 1000);
+  const ms = Math.floor((elapsedMs % 1000) / 10);
+  const timeStr = `${String(mins).padStart(2,'0')}:${String(secs).padStart(2,'0')}.${String(ms).padStart(2,'0')}`;
+
+  rc.innerHTML = `
+    <div class="result-title" style="color:#00f5ff">🏁 40 LINE CLEAR</div>
+    <div class="result-winner" style="color:#ffd700;font-size:1.8rem;margin:0.5rem 0">${timeStr}</div>
+    <div style="color:#aaa;font-size:0.8rem;margin-bottom:1rem">${playerName}</div>
+
+    <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap;margin-bottom:1rem">
+      <button class="btn btn-secondary" onclick="ReplayUI.watchReplay()" style="font-size:0.75rem;padding:0.5rem 1rem">▶ リプレイを見る</button>
+      <button class="btn btn-secondary" onclick="ReplayUI.saveReplay()" style="font-size:0.75rem;padding:0.5rem 1rem">💾 保存</button>
+      <label class="btn btn-secondary" style="font-size:0.75rem;padding:0.5rem 1rem;cursor:pointer">
+        📂 読み込む
+        <input type="file" accept=".tetreplay,.json" style="display:none" onchange="ReplayUI.loadFromFile(this)">
+      </label>
+    </div>
+
+    <div style="display:flex;gap:0.5rem;justify-content:center;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="returnToRoom()" style="font-size:0.75rem">RETURN TO ROOM</button>
+      <button class="btn btn-secondary" onclick="backToLobby()" style="font-size:0.75rem">BACK TO LOBBY</button>
+    </div>
+  `;
+  o.classList.add('open');
+
+  // グローバルにリプレイデータを保持
+  window._lastReplayData = replayData;
+}
+
+// リプレイUI操作オブジェクト
+const ReplayUI = {
+  watchReplay() {
+    const data = window._lastReplayData;
+    if (!data || !data.events || data.events.length === 0) { alert('リプレイデータがありません'); return; }
+    document.getElementById('result-overlay').classList.remove('open');
+    openReplayViewer(data);
+  },
+
+  saveReplay() {
+    const data = window._lastReplayData;
+    if (!data) return;
+    const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const meta = data.meta || {};
+    const elMs = meta.elapsedMs || 0;
+    const mins = String(Math.floor(elMs/60000)).padStart(2,'0');
+    const secs = String(Math.floor((elMs%60000)/1000)).padStart(2,'0');
+    const ms = String(Math.floor((elMs%1000)/10)).padStart(2,'0');
+    a.href = url; a.download = `tetrix_40line_${mins}${secs}${ms}.tetreplay`;
+    a.click(); URL.revokeObjectURL(url);
+  },
+
+  loadFromFile(input) {
+    const file = input.files[0]; if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = JSON.parse(e.target.result);
+        if (!data.events) throw new Error('Invalid replay file');
+        window._lastReplayData = data;
+        document.getElementById('result-overlay').classList.remove('open');
+        openReplayViewer(data);
+      } catch(err) {
+        alert('リプレイファイルの読み込みに失敗しました: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  }
+};
+
+// リプレイビューワーを開く（PixiJSで再生）
+function openReplayViewer(replayData, mode) {
+  // 既存のPixiAppがあれば破棄
+  if (gameApp) { try { gameApp.destroy(true); } catch(e) {} gameApp = null; }
+  renderer = null;
+
+  // リプレイ状態（エフェクト追跡用）
+  const replayState = {
+    _b2bCount: 0,
+    _lastWasB2B: false,
+    _ren: 0,
+  };
+
+  const meta = replayData.meta || {};
+  const players = meta.players || [{ id: meta.myId || 'p1', name: meta.playerName || 'Player' }];
+  const bagSeed = meta.bagSeed || 0;
+
+  // PixiJS初期化（通常ゲームと同様）
+  const container = document.getElementById('pixi-container');
+  container.innerHTML = '';
+  const W = container.clientWidth || window.innerWidth;
+  const H = container.clientHeight || window.innerHeight;
+  const res = settings.quality === 'minimum' || settings.quality === 'low' ? 1 :
+              settings.quality === 'medium' ? 1.5 : settings.quality === 'ultra' ? 2.5 : 2;
+  gameApp = new PIXI.Application({ width: W, height: H, backgroundColor: 0x030712, antialias: true, resolution: res, autoDensity: true });
+  container.appendChild(gameApp.view);
+
+  // ダミーのゲーム状態（レンダラー用）
+  gameState = new TetrisGame(bagSeed);
+  gameState.alive = false; // 重力など無効化
+  renderer = new GameRenderer(gameApp, players, gameState);
+  renderer.drawBoard(); renderer.drawGhost(); renderer.drawCurrent();
+  renderer.drawNextPieces(); renderer.drawHold(); renderer.updateScoreUI();
+
+  showScreen('game');
+
+  // モード判定（applyEventクロージャで参照）
+  const isBlitzReplay = mode === 'blitz' || (meta && meta.mode === 'blitz');
+  const isFortyLineReplay = !isBlitzReplay && (mode === 'fortyline' || (meta && meta.mode === 'fortyline'));
+
+  // モード別ボード背後オーバーレイ
+  if (renderer && renderer._modeOverlayText) {
+    if (isFortyLineReplay) {
+      renderer._modeOverlayText.text = '40';
+      renderer._modeOverlayText.style = new PIXI.TextStyle({ fontFamily: 'Orbitron, sans-serif', fontSize: Math.round(BOARD_W * 0.55), fill: '#ffffff33', fontWeight: '900', align: 'center' });
+      renderer._modeOverlayText.anchor.set(0.5);
+      renderer._modeOverlayText.visible = true;
+      if (renderer._modeOverlaySubText) renderer._modeOverlaySubText.visible = false;
+    } else if (isBlitzReplay) {
+      renderer._modeOverlayText.text = '2:00';
+      renderer._modeOverlayText.style = new PIXI.TextStyle({ fontFamily: 'Orbitron, sans-serif', fontSize: Math.round(BOARD_W * 0.42), fill: '#ffffff2a', fontWeight: '900', align: 'center' });
+      renderer._modeOverlayText.anchor.set(0.5);
+      renderer._modeOverlayText.visible = true;
+      if (renderer._modeOverlaySubText) { renderer._modeOverlaySubText.visible = true; }
+    }
+  }
+  let _replayLastTime = performance.now();
+  gameApp.ticker.add(() => {
+    const now = performance.now();
+    const dt = Math.min(now - _replayLastTime, 50);
+    _replayLastTime = now;
+    if (renderer) renderer.update(dt * ANIM_SPEED);
+  });
+
+  // リプレイUI（コントロールパネル）を作成
+  const ctrl = _createReplayControlPanel(replayData.meta, mode);
+  document.body.appendChild(ctrl);
+
+  // イベントハンドラ（リプレイイベントをゲームUIに反映）
+  function applyEvent(ev) {
+    const { type, data } = ev;
+    if (!renderer) return;
+
+    switch (type) {
+      case 'board_update': {
+        // 自分のボード更新
+        if (gameState) {
+          gameState.board = data.board.map(r => [...r]);
+          if (data.currentPiece) gameState.current = { ...data.currentPiece };
+          if (data.nextPieces) gameState.nextQueue = data.nextPieces;
+          if (data.holdPiece !== undefined) gameState.holdPiece = data.holdPiece;
+          gameState.score = data.score || 0;
+          gameState.lines = data.lines || 0;
+          gameState.level = data.level || 1;
+        }
+        renderer.drawBoard(); renderer.drawGhost(); renderer.drawCurrent();
+        renderer.drawNextPieces(); renderer.drawHold(); renderer.updateScoreUI();
+        // 傾き・シェイク再現（tickerで更新されるのでtargetだけ設定）
+        if (data.tiltAngle !== undefined && settings.tilt === 'on') {
+          renderer.tiltAngle = data.tiltAngle;
+          renderer.tiltTarget = data.tiltAngle;
+        }
+        if (data.shakePower !== undefined) renderer.shakePower = Math.max(renderer.shakePower, data.shakePower);
+        if (data.boardOffsetY !== undefined) renderer.boardOffsetY = Math.max(renderer.boardOffsetY, data.boardOffsetY);
+        // カウンター更新
+        _updateReplayFortyLineCounter(data.lines || 0, isBlitzReplay ? 'blitz' : 'fortyline');
+        // Blitzスコア・タイム更新
+        const blitzScoreEl = document.getElementById('replay-blitz-score');
+        if (blitzScoreEl) blitzScoreEl.textContent = (data.score || 0).toLocaleString();
+        // Blitzリプレイ: 残り時間をオーバーレイに表示
+        if (isBlitzReplay && renderer && renderer._modeOverlayText) {
+          // 現在のリプレイ時刻はReplayPlayer経由で取得
+          const curT = (typeof ReplayPlayer._getCurT === 'function') ? ReplayPlayer._getCurT() : 0;
+          const remaining = Math.max(0, 120000 - curT);
+          const rm = Math.floor(remaining / 60000);
+          const rs2 = Math.floor((remaining % 60000) / 1000);
+          renderer._modeOverlayText.text = `${rm}:${String(rs2).padStart(2,'0')}`;
+          if (renderer._modeOverlaySubText) renderer._modeOverlaySubText.text = (data.score || 0).toLocaleString();
+        }
+        break;
+      }
+      case 'piece_update': {
+        if (gameState && data.currentPiece) {
+          gameState.current = { ...data.currentPiece };
+          renderer.drawCurrent(); renderer.drawGhost();
+        }
+        break;
+      }
+      case 'hard_drop': {
+        // ハードドロップ軌跡パーティクルをリプレイで再現
+        if (renderer && renderer.onHardDrop && gameState && gameState.current) {
+          renderer.onHardDrop(data.dropped || 0);
+        }
+        SFX.hardDrop && SFX.hardDrop();
+        break;
+      }
+      case 'spin_effect': {
+        if (gameState && gameState.current) {
+          renderer.onSpinSparkle(gameState.current.x, gameState.current.y, gameState.current.type, data.spinType);
+        }
+        break;
+      }
+      case 'line_clear_effect': {
+        // ライン消去エフェクト（リプレイ：完全版エフェクト）
+        const { count, spinType, isB2B, ren, allClear } = data;
+
+        // B2B切れ検出（前回B2Bがあって今回ない場合）
+        const wasB2B = replayState._lastWasB2B || false;
+        const prevB2bCount = replayState._b2bCount || 0;
+        if (wasB2B && !isB2B && count > 0) {
+          // B2B切れ「脱力」エフェクト
+          _replayB2bBreak(renderer, prevB2bCount);
+        }
+
+        if (count > 0) {
+          // SFX
+          if (count === 1) SFX.clear1();
+          else if (count === 2) SFX.clear2();
+          else if (count === 3) SFX.clear3();
+          else if (count >= 4) SFX.tetris();
+          if (spinType && spinType.includes('TSPIN')) SFX.tspin();
+          if (isB2B) SFX.b2b();
+          if (ren >= 2) SFX.ren(ren);
+          if (allClear) SFX.allClear();
+
+          // B2B更新
+          if (isB2B) {
+            replayState._b2bCount = (replayState._b2bCount || 0) + 1;
+          } else {
+            replayState._b2bCount = 0;
+          }
+          replayState._lastWasB2B = isB2B;
+
+          // フルエフェクト（renderer.onLineClearを直接呼ぶ）
+          if (renderer.onLineClear) {
+            renderer._b2bCount = replayState._b2bCount;
+            renderer.onLineClear([], count, spinType, isB2B, 0, ren, allClear, 0);
+          }
+        } else {
+          // ライン消去なし → RENリセット
+          replayState._lastWasB2B = false;
+          // B2Bカウントはリセットしない（clearがないだけ）
+        }
+        break;
+      }
+      case 'lines_cleared': {
+        // 攻撃送信エフェクト（プロジェクタイル等は相手がいる場合のみ）
+        break;
+      }
+      case 'attack_sent': {
+        const { fromId, toId, attack, clearRows } = data;
+        if (fromId === meta.myId) {
+          const launchY = renderer._getClearRowsCenterY && renderer._getClearRowsCenterY(clearRows);
+          renderer.onAttackProjectile && renderer.onAttackProjectile(toId, attack, launchY);
+        }
+        break;
+      }
+      case 'opponent_update': {
+        const d = renderer.opBoardData && renderer.opBoardData[data.id];
+        if (d) {
+          d.board = data.board;
+          if (data.currentPiece) d.currentPiece = data.currentPiece;
+          if (data.nextPieces) d.nextPieces = data.nextPieces;
+          if (data.holdPiece !== undefined) d.holdPiece = data.holdPiece;
+          if (data.score !== undefined) d.score = data.score;
+          renderer.updateVisibleOpponents && renderer.updateVisibleOpponents();
+        }
+        break;
+      }
+      case 'bot_update': {
+        const d = renderer.opBoardData && renderer.opBoardData[data.id];
+        if (d) {
+          d.board = data.board;
+          if (data.nextPieces) d.nextPieces = data.nextPieces;
+          if (data.holdPiece !== undefined) d.holdPiece = data.holdPiece;
+          if (data.score !== undefined) d.score = data.score;
+          renderer.updateVisibleOpponents && renderer.updateVisibleOpponents();
+        }
+        break;
+      }
+      case 'opponent_spin': {
+        renderer.triggerOpponentSpin && renderer.triggerOpponentSpin(data.id, data.spinType);
+        break;
+      }
+      case 'opponent_line_clear': {
+        renderer.triggerOpponentLineClear && renderer.triggerOpponentLineClear(data.id, data.count, data.spinType, data.isB2B, data.ren, data.allClear);
+        break;
+      }
+      case 'receive_garbage': {
+        renderer.onGarbageIncoming && renderer.onGarbageIncoming(data.lines, data.fromId);
+        break;
+      }
+      case 'player_dead': {
+        renderer.opponentGameOver && renderer.opponentGameOver(data.id);
+        break;
+      }
+    }
+  }
+
+  ReplayPlayer.load(replayData);
+
+  function _startReplayPlayback() {
+    ReplayPlayer.load(replayData);
+    ReplayPlayer.play(
+      applyEvent,
+      () => {
+        // 再生終了 → 最初から繰り返す
+        const endEl = document.getElementById('replay-ctrl-status');
+        if (endEl) endEl.textContent = 'リピート中...';
+        const playBtn = document.getElementById('replay-play-btn');
+        if (playBtn) { playBtn.textContent = '⏸'; playBtn.dataset.state = 'playing'; }
+        setTimeout(() => { _startReplayPlayback(); }, 800);
+      },
+      (pct, replayT) => {
+        // プログレス更新
+        const bar = document.getElementById('replay-progress-bar');
+        if (bar) bar.style.width = (pct * 100) + '%';
+        const timeEl = document.getElementById('replay-time-display');
+        if (timeEl) {
+          const ms = Math.floor(replayT);
+          const m = Math.floor(ms/60000);
+          const s = Math.floor((ms%60000)/1000);
+          const t = Math.floor((ms%1000)/100);
+          timeEl.textContent = `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}.${t}`;
+        }
+      }
+    );
+  }
+
+  _startReplayPlayback();
+}
+
+// B2B切れ「脱力」エフェクト: ボードがぐったり落下してから戻る
+function _replayB2bBreak(rend, b2bCount) {
+  if (!rend || settings.quality === 'minimum') return;
+  // 「脱力」: ボードが一瞬下にドロップしてゆっくり戻る
+  // + 白い放電ライン
+  if (rend._breakB2bLightning) rend._breakB2bLightning();
+
+  // ボード全体を下に「落とす」視覚効果
+  if (rend.boardWrap) {
+    const origY = rend.boardWrap.y;
+    const dropAmt = 18 + Math.min(b2bCount * 3, 30);
+    const duration = 600;
+    let elapsed = 0;
+    const droop = () => {
+      elapsed += 16;
+      const t = elapsed / duration;
+      if (t < 0.25) {
+        // 0→1: 急降下
+        const p = t / 0.25;
+        rend.boardWrap.y = origY + dropAmt * p;
+      } else if (t < 0.55) {
+        // 1→0: ぐったりゆっくり戻る（ダンピング）
+        const p = (t - 0.25) / 0.30;
+        rend.boardWrap.y = origY + dropAmt * (1 - p * p);
+      } else if (t < 0.8) {
+        // 小さいバウンス
+        const p = (t - 0.55) / 0.25;
+        rend.boardWrap.y = origY - Math.sin(p * Math.PI) * dropAmt * 0.12;
+      } else {
+        rend.boardWrap.y = origY;
+        return;
+      }
+      requestAnimationFrame(droop);
+    };
+    requestAnimationFrame(droop);
+  }
+
+  // 「ため息」パーティクル: 上向きにフワっと出る灰色粒子
+  if (rend.effectsLayer && settings.particles !== 'off') {
+    const cx = rend.mainBX + BOARD_W / 2;
+    const cy = rend.mainBY + BOARD_H * 0.3;
+    const n = settings.particles === 'high' ? 20 : 10;
+    for (let i = 0; i < n; i++) {
+      setTimeout(() => {
+        if (!rend.effectsLayer) return;
+        const g = new PIXI.Graphics();
+        const sz = Math.random() * 5 + 3;
+        const alpha = 0.5 + Math.random() * 0.3;
+        g.beginFill(0xaaaaaa, alpha);
+        g.drawCircle(0, 0, sz);
+        g.endFill();
+        g.x = cx + (Math.random() - 0.5) * BOARD_W * 0.7;
+        g.y = cy + (Math.random() - 0.5) * BOARD_H * 0.3;
+        rend.effectsLayer.addChild(g);
+        // ゆっくり上昇してフェード
+        const vx = (Math.random() - 0.5) * 0.8;
+        const vy = -(0.5 + Math.random() * 1.2);
+        rend.particles.push({ gfx: g, vx, vy, life: 1, decay: 0.012 + Math.random() * 0.008 });
+      }, i * 40);
+    }
+  }
+
+  // SFX: 力が抜けるような低い音
+  try {
+    const ctx = getAudio();
+    const osc = ctx.createOscillator();
+    const g2 = ctx.createGain();
+    osc.connect(g2); g2.connect(ctx.destination);
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(220, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(55, ctx.currentTime + 0.6);
+    g2.gain.setValueAtTime(0.35 * sfxVol, ctx.currentTime);
+    g2.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.6);
+    osc.start(); osc.stop(ctx.currentTime + 0.6);
+  } catch(e) {}
+}
+
+function _updateReplayFortyLineCounter(lines, mode) {
+  // コントロールパネルのDOM要素（40ラインモード）
+  const el = document.getElementById('replay-fortyliner-remaining');
+  if (el) {
+    const rem = Math.max(0, 40 - lines);
+    el.textContent = rem;
+    el.style.color = rem <= 10 ? '#ff006e' : rem <= 20 ? '#ffd700' : '#00f5ff';
+  }
+  // ボード後ろのオーバーレイテキスト
+  if (renderer && renderer._modeOverlayText && renderer._modeOverlayText.visible) {
+    const isBlitz = mode === 'blitz';
+    if (!isBlitz) {
+      const rem = Math.max(0, 40 - lines);
+      renderer._modeOverlayText.text = String(rem).padStart(2,'0');
+    }
+  }
+}
+
+function _createReplayControlPanel(meta, mode) {
+  // 既存のパネルを削除
+  const old = document.getElementById('replay-ctrl-panel');
+  if (old) old.remove();
+
+  const elMs = meta && meta.elapsedMs ? meta.elapsedMs : 0;
+  const isBlitz = mode === 'blitz' || (meta && meta.mode === 'blitz');
+  const mins = String(Math.floor(elMs/60000)).padStart(2,'0');
+  const secs = String(Math.floor((elMs%60000)/1000)).padStart(2,'0');
+  const ms = String(Math.floor((elMs%1000)/10)).padStart(2,'0');
+  const timeStr = `${mins}:${secs}.${ms}`;
+  const totalLabel = isBlitz ? '2:00 BLITZ' : `/ ${timeStr}`;
+  const barColor = isBlitz ? '#ff006e' : '#00f5ff';
+
+  // モード別情報表示
+  const modeInfo = isBlitz
+    ? `<div style="display:flex;align-items:center;gap:4px"><span style="color:#ff006e;font-size:11px">⚡ BLITZ</span><span id="replay-blitz-score" style="color:#ffd700;font-weight:bold;font-size:14px">0</span></div>`
+    : `<div style="display:flex;align-items:center;gap:4px"><span style="color:#aaa;font-size:11px">残り</span><span id="replay-fortyliner-remaining" style="color:#00f5ff;font-weight:bold;font-size:16px">40</span><span style="color:#aaa;font-size:11px">ライン</span></div>`;
+
+  const panel = document.createElement('div');
+  panel.id = 'replay-ctrl-panel';
+  panel.style.cssText = `
+    position:fixed;bottom:0;left:0;right:0;z-index:5000;
+    background:rgba(3,7,18,0.95);border-top:1px solid ${barColor}44;
+    padding:8px 16px;display:flex;flex-direction:column;gap:6px;
+    font-family:monospace;
+  `;
+
+  panel.innerHTML = `
+    <div style="display:flex;align-items:center;gap:8px">
+      <div id="replay-progress-track" style="flex:1;height:6px;background:rgba(255,255,255,0.1);border-radius:3px;cursor:pointer;position:relative" onclick="ReplayUI.onSeek(event)">
+        <div id="replay-progress-bar" style="height:100%;width:0%;background:${barColor};border-radius:3px;pointer-events:none;transition:width 0.1s"></div>
+      </div>
+      <div id="replay-time-display" style="color:#ffd700;font-size:12px;min-width:56px;text-align:right">00:00.0</div>
+      <div style="color:#aaa;font-size:11px">${totalLabel}</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <button id="replay-play-btn" data-state="playing" onclick="ReplayUI.togglePlay()" style="background:rgba(0,245,255,0.15);border:1px solid ${barColor};color:${barColor};padding:4px 14px;border-radius:6px;font-size:14px;cursor:pointer">⏸</button>
+      <select id="replay-speed-sel" onchange="ReplayUI.setSpeed(this.value)" style="background:rgba(0,0,0,0.6);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:3px 6px;border-radius:6px;font-size:12px">
+        <option value="0.25">×0.25</option>
+        <option value="0.5">×0.5</option>
+        <option value="1" selected>×1.0</option>
+        <option value="2">×2.0</option>
+        <option value="4">×4.0</option>
+        <option value="6">×6.0</option>
+        <option value="10">×10</option>
+      </select>
+      <span id="replay-ctrl-status" style="color:#aaa;font-size:11px;flex:1">再生中</span>
+      ${modeInfo}
+      <button onclick="ReplayUI.saveReplayFromViewer()" style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">💾 保存</button>
+      <label style="background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);color:#fff;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">
+        📂 読込
+        <input type="file" accept=".tetreplay,.json" style="display:none" onchange="ReplayUI.loadFromFile(this)">
+      </label>
+      <button onclick="ReplayUI.exitViewer()" style="background:rgba(255,0,110,0.15);border:1px solid #ff006e;color:#ff006e;padding:4px 10px;border-radius:6px;font-size:11px;cursor:pointer">✕ 終了</button>
+    </div>
+  `;
+
+  return panel;
+}
+
+// ReplayUIに追加メソッド
+Object.assign(ReplayUI, {
+  onSeek(e) {
+    const track = document.getElementById('replay-progress-track');
+    if (!track) return;
+    const rect = track.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    ReplayPlayer.seekTo(pct);
+  },
+  togglePlay() {
+    const btn = document.getElementById('replay-play-btn');
+    if (ReplayPlayer.paused) {
+      ReplayPlayer.resume();
+      if (btn) btn.textContent = '⏸';
+      const st = document.getElementById('replay-ctrl-status');
+      if (st) st.textContent = '再生中';
+    } else {
+      ReplayPlayer.pause();
+      if (btn) btn.textContent = '▶';
+      const st = document.getElementById('replay-ctrl-status');
+      if (st) st.textContent = '一時停止中';
+    }
+  },
+  setSpeed(v) { ReplayPlayer.setSpeed(parseFloat(v)); },
+  saveReplayFromViewer() { this.saveReplay(); },
+  exitViewer() {
+    ReplayPlayer.stop();
+    const p = document.getElementById('replay-ctrl-panel');
+    if (p) p.remove();
+    const fl = document.getElementById('fortyliner-overlay');
+    if (fl) fl.style.display = 'none';
+    returnToRoom();
+  }
+});
+
+
+
+
+// ぷよテト「ビッグバンモード」と同じ仕様:
+//   - 普通のテトリスとして対戦できる
+//   - ラインを消すにはスピンが必須（スピンなしでは消えない）
+//   - スピンに成功したラインだけ消える
+//   - 相手からの攻撃も飛んでくる（通常対戦と同じ）
+// =====================================================
+
+// AllSpinゲームの状態
+let asState = null;
 
 function initAllSpinGame(players, bagSeed) {
   setupInput();
 
   asState = {
-    problemIdx: 0,
-    solved: 0,
-    streak: 0,
-    score: 0,
-    rngSeed: bagSeed,
-    currentChallenge: null,
-    waitingNextProblem: false,
-    // タイマー
-    startTime: Date.now(),
-    timeLimit: BIGBANG_DURATION,
-    timerInterval: null,
-    flashTimer: null,
-    _miniFlashTimer: null,
+    totalSpins: 0,
+    spinStreakCurrent: 0,
+    spinStreakBest: 0,
+    lastSpinType: null,
   };
 
   // オーバーレイを表示
   const overlay = document.getElementById('allspin-overlay');
   if(overlay) overlay.classList.add('active');
 
-  // タイマー開始
-  asState.timerInterval = setInterval(()=>updateBigBangTimer(), 100);
+  updateAllSpinUI();
 
-  // 最初の問題をロード
-  loadNextAllSpinProblem();
-
-  // ゲームループ
+  // ゲームループ: 通常ゲームと同じ
   let lastTime = performance.now();
+  let lastEmit = 0;
+  const EMIT_INTERVAL = 50;
   gameApp.ticker.add(()=>{
     const now = performance.now();
-    const rawDt = Math.min(now-lastTime,100);
+    const rawDt = Math.min(now-lastTime, 100);
     lastTime = now;
-    if(gameState && gameState.alive) gameState.updateGravity(rawDt);
+    if(gameState && gameState.alive) {
+      gameState.updateGravity(rawDt);
+      if(now-lastEmit >= EMIT_INTERVAL) {
+        lastEmit = now;
+        gameState._emitCurrentPiece();
+      }
+    }
     renderer && renderer.update(rawDt*ANIM_SPEED);
   });
 }
 
-function updateBigBangTimer() {
-  if(!asState) return;
-  const elapsed = Date.now() - asState.startTime;
-  const remaining = Math.max(0, asState.timeLimit - elapsed);
-  const secs = Math.ceil(remaining / 1000);
-
-  const timerEl = document.getElementById('allspin-timer');
-  if(timerEl) {
-    timerEl.textContent = secs;
-    timerEl.style.color = secs <= 10 ? '#ff006e' : secs <= 20 ? '#ffbe0b' : '#00f5ff';
-    if(secs <= 10) timerEl.style.animation = 'timerPulse 0.5s ease infinite';
-    else timerEl.style.animation = '';
-  }
-
-  if(remaining <= 0) {
-    endBigBangGame();
-  }
-}
-
-function endBigBangGame() {
-  if(!asState) return;
-  clearInterval(asState.timerInterval);
-  asState.timerInterval = null;
-  asState.waitingNextProblem = true;
-
-  // 結果オーバーレイに表示
-  const overlay = document.getElementById('allspin-overlay');
-  if(overlay) overlay.classList.remove('active');
-
-  // ゲームを止める
-  if(gameState) gameState.alive = false;
-
-  // 結果表示（既存のresult-overlayを再利用）
-  const resultEl = document.getElementById('result-overlay');
-  if(resultEl) {
-    resultEl.classList.add('open');
-    const titleEl = resultEl.querySelector('.result-title');
-    if(titleEl) titleEl.textContent = '🌀 BIG BANG RESULT';
-    const subEl = resultEl.querySelector('.result-subtitle');
-    if(subEl) subEl.innerHTML = `<span style="color:#cc00ff;font-size:1.2em">${asState.score.toLocaleString()} pts</span><br><span style="opacity:0.6;font-size:0.8em">${asState.solved} spins / streak ${asState.streak}</span>`;
-  }
-  addChatSystem(`🌀 BIG BANG終了！ ${asState.solved}スピン / ${asState.score.toLocaleString()}pts`);
-}
-
-function loadNextAllSpinProblem() {
-  if(!asState || asState.waitingNextProblem) return;
-
-  // ランダムにチャレンジを選択
-  const rng = seededRng(asState.rngSeed + asState.problemIdx * 1373);
-  const challengeIdx = Math.floor(rng() * ALLSPIN_CHALLENGES.length);
-  const ch = ALLSPIN_CHALLENGES[challengeIdx];
-  asState.currentChallenge = ch;
-
-  // その種類の盤面を選択
-  const boards = BIGBANG_BOARDS[ch.id] || BIGBANG_BOARDS['tspin_double'];
-  const boardDef = boards[Math.floor(rng() * boards.length)];
-
-  // gameStateをリセット
-  if(!gameState) gameState = new TetrisGame(asState.rngSeed + asState.problemIdx);
-  if(gameState.lockTimer){clearTimeout(gameState.lockTimer);gameState.lockTimer=null;}
-
-  const boardRng = seededRng(asState.rngSeed + asState.problemIdx * 997 + 1);
-  gameState.board = makeBigBangBoard(boardDef.rows, boardRng);
-  gameState.alive = true;
-  gameState.lastSpin = null;
-  gameState.lastSpinType = null;
-  gameState.locking = false;
-  gameState.holdPiece = null;
-  gameState.holdCustomShape = null;
-  gameState.holdUsed = false;
-  gameState.combo = -1;
-  gameState.b2b = false;
-  gameState.garbageQueue = [];
-  gameState._pendingGameOver = false;
-
-  // NEXTキュー: メインピースを先頭に、ランダムを後ろに
-  const mainPiece = ch.piece || 'T';
-  const nextPieces = [mainPiece];
-  const pieceTypes = ['I','O','T','S','Z','J','L'];
-  for(let i=0;i<5;i++) nextPieces.push(pieceTypes[Math.floor(rng()*pieceTypes.length)]);
-  gameState.nextQueue = nextPieces.map(t=>({type:t,customShape:null}));
-
-  // 現在ミノをスポーン（推奨位置があれば使う）
-  const firstEntry = gameState.nextQueue.shift();
-  const sx = boardDef.spawnX !== undefined ? boardDef.spawnX : 3;
-  const sr = boardDef.spawnRot !== undefined ? boardDef.spawnRot : 0;
-  gameState.current = { type: firstEntry.type, rotation: sr, x: sx, y: SPAWN_Y, customShape: null };
-
-  updateAllSpinUI();
-  if(renderer){
-    renderer.drawBoard(); renderer.drawGhost(); renderer.drawCurrent();
-    renderer.drawNextPieces(); renderer.drawHold(); renderer.updateScoreUI();
-  }
-}
-
 function updateAllSpinUI() {
-  if(!asState || !asState.currentChallenge) return;
-  const ch = asState.currentChallenge;
+  if(!asState) return;
 
-  const targetEl = document.getElementById('allspin-spin-target');
-  if(targetEl){ targetEl.textContent = ch.label; targetEl.style.color = ch.color; }
+  const spinEl = document.getElementById('allspin-spin-target');
+  if(spinEl) {
+    spinEl.textContent = 'BIG BANG MODE';
+    spinEl.style.color = '#ff006e';
+  }
 
   const hintEl = document.getElementById('allspin-hint');
-  if(hintEl) hintEl.textContent = ch.hint;
+  if(hintEl) hintEl.textContent = 'スピンしないとラインが消えない！回転で攻めろ！';
 
   const progEl = document.getElementById('allspin-progress');
-  if(progEl) progEl.textContent = `#${asState.problemIdx + 1}`;
+  if(progEl) progEl.textContent = `スピン ${asState.totalSpins}`;
 
   const solvedEl = document.getElementById('allspin-solved-count');
-  if(solvedEl) solvedEl.textContent = asState.solved;
+  if(solvedEl) solvedEl.textContent = asState.totalSpins;
 
   const streakEl = document.getElementById('allspin-streak');
-  if(streakEl) streakEl.textContent = `🔥 ${asState.streak}`;
-
-  const scoreEl = document.getElementById('allspin-score-val');
-  if(scoreEl) scoreEl.textContent = asState.score.toLocaleString();
+  if(streakEl) streakEl.textContent = `🔥 ${asState.spinStreakCurrent} streak`;
 }
 
-function checkAllSpinClear(spinType, linesCleared) {
-  if(!asState || !asState.currentChallenge || asState.waitingNextProblem) return false;
-  const ch = asState.currentChallenge;
-
-  // スピン種類とライン数チェック
-  if(spinType !== ch.targetSpin || linesCleared < ch.targetLines) return false;
-
-  // 成功！
-  asState.waitingNextProblem = true;
-  asState.solved++;
-  asState.streak++;
-  asState.problemIdx++;
-
-  // スコア計算: 基本スコア + 残り時間ボーナス + ストリークボーナス
-  const elapsed = Date.now() - asState.startTime;
-  const remaining = Math.max(0, asState.timeLimit - elapsed);
-  const timeBonus = Math.floor(remaining / 1000) * BIGBANG_TIME_BONUS_PER_SEC;
-  const streakBonus = Math.min(asState.streak, 10) * 100;
-  const gained = BIGBANG_BASE_SCORE + timeBonus + streakBonus;
-  asState.score += gained;
-  asState.rngSeed = (asState.rngSeed * 1664525 + 1013904223) >>> 0;
+// BigBang: スピン消去を記録してUI更新
+function onBigBangSpinClear(spinType, linesCleared) {
+  if(!asState) return;
+  asState.totalSpins++;
+  asState.spinStreakCurrent++;
+  if(asState.spinStreakCurrent > asState.spinStreakBest) {
+    asState.spinStreakBest = asState.spinStreakCurrent;
+  }
+  asState.lastSpinType = spinType;
 
   // フラッシュ演出
-  showBigBangFlash(ch, asState.streak, gained);
-  updateAllSpinUI();
-
-  // 0.8秒後に次の問題
-  setTimeout(()=>{
-    if(asState && !asState.timerInterval === false) {
-      asState.waitingNextProblem = false;
-      loadNextAllSpinProblem();
-    }
-  }, 800);
-
-  return true;
-}
-
-function showBigBangFlash(challenge, streak, gained) {
   const flash = document.getElementById('allspin-cleared-flash');
   const text = document.getElementById('allspin-flash-text');
-  if(!flash || !text) return;
+  if(flash && text) {
+    const spinColors = {TSPIN:'#cc00ff',MINI_TSPIN:'#aa66ff',ISPIN:'#00f5ff',SSPIN:'#8BC34A',ZSPIN:'#ff006e',LSPIN:'#ff8500',JSPIN:'#4361ee',SPIN180:'#ffffff'};
+    const msgs = {TSPIN:'T-SPIN!',MINI_TSPIN:'MINI T-SPIN!',ISPIN:'I-SPIN!',SSPIN:'S-SPIN!',ZSPIN:'Z-SPIN!',LSPIN:'L-SPIN!',JSPIN:'J-SPIN!',SPIN180:'180° SPIN!'};
+    text.textContent = msgs[spinType] || 'SPIN!';
+    text.style.color = spinColors[spinType] || '#ffffff';
+    flash.classList.add('show');
+    clearTimeout(asState._flashTimer);
+    asState._flashTimer = setTimeout(()=>flash.classList.remove('show'), 900);
+  }
 
-  let msg = `+${gained}`;
-  if(streak >= 10) msg = `🔥 GODLIKE! +${gained}`;
-  else if(streak >= 7) msg = `🔥 AMAZING! +${gained}`;
-  else if(streak >= 5) msg = `🔥 HOT! +${gained}`;
-  else if(streak >= 3) msg = `🌀 SPIN! +${gained}`;
-  else msg = `✓ +${gained}`;
-
-  text.textContent = msg;
-  text.style.color = challenge.color;
-  flash.classList.add('show');
-
-  clearTimeout(asState.flashTimer);
-  asState.flashTimer = setTimeout(()=>{ flash.classList.remove('show'); }, 900);
+  updateAllSpinUI();
 }
 
-// TetrisGame.clearLinesにhookしてスピン消去を検出
+// AllSpinモード(BigBang): clearLinesをオーバーライド
+// スピンなしでの消去をブロックする
 const _origClearLines = TetrisGame.prototype.clearLines;
 TetrisGame.prototype.clearLines = function() {
+  if(!allspinMode) {
+    _origClearLines.call(this);
+    return;
+  }
+
+  // BigBangモード: スピンがなければラインを消去しない
   const spinType = this.lastSpinType;
-  _origClearLines.call(this);
-  if(allspinMode && asState && spinType) {
-    const cleared = this._lastLinesCleared || 0;
-    if(cleared > 0) checkAllSpinClear(spinType, cleared);
-  }
-};
 
-// AllSpinモード中はgame_overにしない
-const _origLockPiece = TetrisGame.prototype.lockPiece;
-TetrisGame.prototype.lockPiece = function() {
-  if(allspinMode && asState) this._pendingGameOver = false;
-  _origLockPiece.call(this);
-  // スピンに失敗して積み上がったらリセット
-  if(allspinMode && asState && !asState.waitingNextProblem) {
-    let topRow = ROWS + HIDDEN;
-    for(let r=0;r<ROWS+HIDDEN;r++){ if(this.board[r].some(v=>v)){topRow=r;break;} }
-    if(topRow < HIDDEN + 2) {
-      asState.streak = 0;
-      asState.waitingNextProblem = false;
-      asState.problemIdx++;
-      asState.rngSeed = (asState.rngSeed * 1664525 + 1013904223) >>> 0;
-      loadNextAllSpinProblem();
+  if(!spinType) {
+    // スピンなし: ラインは消えない。ゴミ適用等はする
+    const wouldClear = [];
+    for(let r = ROWS+HIDDEN-1; r >= 0; r--) {
+      if(this.board[r].every(c=>c!==0)) wouldClear.push(r);
     }
+
+    if(wouldClear.length > 0) {
+      // ラインは消えないが、コンボリセット
+      if(this.ren > 0) { SFX.renReset(); }
+      this.combo = -1;
+      this.ren = 0;
+      renderer && renderer.endComboLabel();
+      socket.emit('line_clear_effect',{count:0,spinType:null,isB2B:false,ren:0,allClear:false});
+
+      // ゴミキューの処理
+      const now = performance.now();
+      const armed = this.garbageQueue.filter(g=>g.readyAt<=now);
+      this.garbageQueue = this.garbageQueue.filter(g=>g.readyAt>now);
+      if(armed.length && this.combo < 1) {
+        const total = armed.reduce((a,b)=>a+b.lines,0);
+        if(total > 0) this._applyGarbageAnimated(armed, total);
+      }
+
+      this.lastSpin = null; this.lastSpinType = null;
+      this._lastLinesCleared = 0;
+      this.spawnPiece();
+      this._emitBoardUpdate();
+      if(shogiMode) socket.emit('shogi_human_placed');
+      if(!this.alive || this._pendingGameOver) {
+        this.alive = false; this._pendingGameOver = false;
+        socket.emit('game_over'); renderer && renderer.onGameOver();
+      }
+      return;
+    }
+
+    // 消去候補なし: 通常処理
+    _origClearLines.call(this);
+    return;
+  }
+
+  // スピンあり: 通常通り消去
+  _origClearLines.call(this);
+
+  // スピン消去UIを更新
+  const cleared = this._lastLinesCleared || 0;
+  if(cleared > 0) {
+    onBigBangSpinClear(spinType, cleared);
   }
 };
 
-
+// NOTE: allspinModeでもゲームオーバーは普通に処理（ビッグバンは通常対戦ルール）
+// clearLines末尾でgame_overが送られるのでoverrideは不要
 
 
 // ---- Floating Label ----
@@ -2189,6 +3593,36 @@ class GameRenderer{
     this.b2bBadgeCont.visible=false;
     const n=Object.assign(new PIXI.Text((this.myPlayer?this.myPlayer.name:'').toUpperCase(),new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.round(12*fsc),fill:0x00f5ff,letterSpacing:3})),{x:this.mainBX,y:this.mainBY-22});
     this.root.addChild(n);
+
+    // ★ モード別背景オーバーレイテキスト（40ライン残り数 / Blitz残り時間）
+    // ボードの boardCont に乗せるので常に正面に出るが、alpha低くして目立たなくする
+    const overlayFontSize = Math.round(BOARD_W * 0.55);
+    this._modeOverlayText = new PIXI.Text('', new PIXI.TextStyle({
+      fontFamily: 'Orbitron, sans-serif',
+      fontSize: overlayFontSize,
+      fill: '#ffffff44',
+      fontWeight: '900',
+      align: 'center',
+    }));
+    this._modeOverlayText.anchor.set(0.5);
+    this._modeOverlayText.x = BOARD_W / 2;
+    this._modeOverlayText.y = BOARD_H / 2;
+    this._modeOverlayText.alpha = 1.0;
+    this._modeOverlayText.visible = false;
+    // boardGfxより手前、currentGfxより後ろに挿入（背景の次）
+    this.boardCont.addChildAt(this._modeOverlayText, 2);
+
+    this._modeOverlaySubText = new PIXI.Text('', new PIXI.TextStyle({
+      fontFamily: 'Share Tech Mono, monospace',
+      fontSize: Math.round(18 * sc),
+      fill: '#ffffff33',
+      align: 'center',
+    }));
+    this._modeOverlaySubText.anchor.set(0.5);
+    this._modeOverlaySubText.x = BOARD_W / 2;
+    this._modeOverlaySubText.y = BOARD_H / 2 + Math.round(BOARD_W * 0.55 * 0.6);
+    this._modeOverlaySubText.visible = false;
+    this.boardCont.addChildAt(this._modeOverlaySubText, 3);
   }
 
   drawCell(gfx,x,y,size,type,alpha=1,lockFlash=0){
@@ -2602,6 +4036,110 @@ class GameRenderer{
     }
   }
 
+  // B2B切れ「脱力」エフェクト
+  // B2Bが長く続いた後に途切れると、ボードがぐったり落下→戻る＋ため息パーティクル
+  _triggerDatsuroku(b2bCount){
+    if(settings.quality==='minimum') return;
+
+    // ボードを下にドロップしてゆっくり戻す「ぐったり」アニメ
+    if(this.boardWrap){
+      const dropAmt=Math.min(14+b2bCount*2, 32);
+      const duration=700;
+      const startT=performance.now();
+      const origY=this.boardWrap.y; // 現在のY座標を基準にする
+      this._datsurokuActive=true;
+      const animate=()=>{
+        const elapsed=performance.now()-startT;
+        const t=elapsed/duration;
+        if(t>=1){
+          this._datsurokuActive=false;
+          return;
+        }
+        if(t<0.2){
+          // 急降下 (0→dropAmt)
+          const p=t/0.2;
+          this.boardWrap.y=origY+dropAmt*p;
+        } else if(t<0.65){
+          // ぐったりゆっくり戻る（over-damped）
+          const p=(t-0.2)/0.45;
+          const ease=1-Math.pow(1-p,2.5);
+          this.boardWrap.y=origY+dropAmt*(1-ease);
+        } else if(t<0.85){
+          // 小さいバウンス
+          const p=(t-0.65)/0.2;
+          this.boardWrap.y=origY-Math.sin(p*Math.PI)*dropAmt*0.08;
+        } else {
+          this.boardWrap.y=origY;
+        }
+        requestAnimationFrame(animate);
+      };
+      requestAnimationFrame(animate);
+    }
+
+    // 「ため息」パーティクル: 上向きにフワっと出る灰色の小円
+    if(settings.particles!=='off'&&this.effectsLayer){
+      const cx=this.mainBX+BOARD_W/2;
+      const cy=this.mainBY+BOARD_H*0.35;
+      const n=settings.particles==='high'?24:12;
+      for(let i=0;i<n;i++){
+        setTimeout(()=>{
+          if(!this.effectsLayer)return;
+          const g=new PIXI.Graphics();
+          const sz=Math.random()*6+3;
+          // グレー〜薄白のため息
+          const grayVal=Math.floor(0x88+Math.random()*0x66);
+          const col=(grayVal<<16)|(grayVal<<8)|grayVal;
+          g.beginFill(col,0.45+Math.random()*0.3);
+          g.drawCircle(0,0,sz);
+          g.endFill();
+          g.x=cx+(Math.random()-0.5)*BOARD_W*0.8;
+          g.y=cy+(Math.random()-0.5)*BOARD_H*0.25;
+          g.alpha=0;
+          this.effectsLayer.addChild(g);
+          // フェードイン→ゆっくり上昇→フェードアウト
+          const vx=(Math.random()-0.5)*0.6;
+          const vy=-(0.4+Math.random()*0.9);
+          this.particles.push({
+            gfx:g,
+            vx,vy,
+            life:1,
+            decay:0.008+Math.random()*0.006,
+            _fadein:true,_fadeT:0
+          });
+          // フェードイン
+          let fi=0;
+          const fin=()=>{fi+=16;g.alpha=Math.min(1,fi/180)*(0.45+Math.random()*0.3);if(fi<180)requestAnimationFrame(fin);};
+          requestAnimationFrame(fin);
+        },i*25+Math.random()*30);
+      }
+    }
+
+    // ラベル「B2B BREAK」をボード右に表示
+    if(b2bCount>=2){
+      const lx=this.mainBX+BOARD_W+18;
+      const ly=this.mainBY+BOARD_H*0.5;
+      const breakLabel=new FloatLabel(this.app,lx,ly,`B2B ×${b2bCount} BREAK`,0xaaaaaa,false);
+      breakLabel._fadeDelay=1200;
+      this.floatLabels.push(breakLabel);
+    }
+
+    // SFX: 力が抜けるような低い音
+    try{
+      const ctx=getAudio();
+      const osc=ctx.createOscillator();
+      const gn=ctx.createGain();
+      osc.connect(gn);gn.connect(ctx.destination);
+      osc.type='sawtooth';
+      osc.frequency.setValueAtTime(200,ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(50,ctx.currentTime+0.55);
+      gn.gain.setValueAtTime(0.3*sfxVol,ctx.currentTime);
+      gn.gain.exponentialRampToValueAtTime(0.001,ctx.currentTime+0.55);
+      osc.start();osc.stop(ctx.currentTime+0.55);
+      // 短いシュっという音
+      setTimeout(()=>{playNoise(0.18,0.18,300);},80);
+    }catch(e){}
+  }
+
   // スピン確定時のみ傾く
   onSpinTilt(dir){
     if(settings.tilt!=='on')return;
@@ -2670,7 +4208,58 @@ class GameRenderer{
       const gs=this.gs;const gy=gs.ghostY();
       const shape=gs._getShapeForPiece(gs.current);
       const col=PIECE_COLORS[gs.current.type]||0xffffff;
-      // Hard drop sparkle
+      const startY=gs.current.y; // ドロップ前のY
+
+      // ★ ハードドロップ軌跡: 落下経路に残像＋パーティクルを描く
+      if(dropped>0&&settings.quality!=='minimum'){
+        const r=(col>>16)&0xff, g2=(col>>8)&0xff, b=col&0xff;
+        const trailSteps=settings.particles==='high'?Math.min(dropped,8):Math.min(dropped,4);
+        const stepSize=dropped/trailSteps;
+        for(let s=0;s<trailSteps;s++){
+          const fracY=startY+s*stepSize-HIDDEN;
+          if(fracY<0)continue;
+          const alpha=0.18*(1-s/trailSteps); // 上ほど薄く
+          // 各ブロックにぼかした残像
+          for(let r2=0;r2<shape.length;r2++){
+            for(let c2=0;c2<shape[r2].length;c2++){
+              if(!shape[r2][c2])continue;
+              const px=this.mainBX+(gs.current.x+c2)*CELL;
+              const py=this.mainBY+(fracY+r2)*CELL;
+              if(py+CELL<this.mainBY||py>this.mainBY+BOARD_H)continue;
+              const ghost=new PIXI.Graphics();
+              // ぼかし表現: 少し縮小した矩形（中心に向かってフェード）
+              const margin=CELL*0.18;
+              ghost.beginFill(col,alpha);
+              ghost.drawRoundedRect(px+margin,py+margin,CELL-margin*2,CELL-margin*2,3);
+              ghost.endFill();
+              // ぼかし的に外側も薄く
+              ghost.beginFill(col,alpha*0.4);
+              ghost.drawRoundedRect(px+1,py+1,CELL-2,CELL-2,4);
+              ghost.endFill();
+              this.effectsLayer.addChild(ghost);
+              this.particles.push({gfx:ghost,vx:0,vy:0,life:alpha*5,decay:0.06+s*0.01});
+            }
+          }
+          // 軌跡に沿った細かいパーティクル（ブロックカラー）
+          if(s%2===0){
+            for(let c2=0;c2<shape[0].length;c2++){
+              if(!shape[0]?.[c2]&&!shape[1]?.[c2])continue;
+              const px=this.mainBX+(gs.current.x+c2)*CELL+CELL/2;
+              const py=this.mainBY+(fracY)*CELL;
+              const pg=new PIXI.Graphics();
+              pg.beginFill(col,0.55*(1-s/trailSteps));
+              pg.drawCircle(0,0,Math.random()*2+1);
+              pg.endFill();
+              pg.x=px+(Math.random()-0.5)*CELL*0.5;
+              pg.y=py+(Math.random()-0.5)*4;
+              this.effectsLayer.addChild(pg);
+              this.particles.push({gfx:pg,vx:(Math.random()-0.5)*0.8,vy:Math.random()*0.5,life:0.6,decay:0.05});
+            }
+          }
+        }
+      }
+
+      // Hard drop sparkle（着地点）
       for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
         if(!shape[r][c])continue;
         const dr=gy+r-HIDDEN;if(dr<0)continue;
@@ -3029,7 +4618,10 @@ class GameRenderer{
       this._triggerLightning(this._b2bCount);
       this._punchB2bBadge(); // カウント更新エフェクト
     } else {
-      if(this._b2bCount>=1) this._breakB2bLightning(); // B2B途切れ白稲妻
+      if(this._b2bCount>=1) {
+        this._breakB2bLightning(); // B2B途切れ白稲妻
+        this._triggerDatsuroku(this._b2bCount); // B2B切れ「脱力」エフェクト
+      }
       this._b2bCount=0;
     }
     this.updateB2bBadge();
@@ -4453,6 +6045,7 @@ function stopSoftDrop(){if(softDropTimer){clearInterval(softDropTimer);softDropT
 
 // ---- Multiplayer ----
 socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines})=>{
+  ReplayRecorder.record('opponent_update',{id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines});
   if(!renderer)return;
   const d=renderer.opBoardData[id];if(!d)return;
   d.board=board;
@@ -4471,6 +6064,7 @@ socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces
 
 // BOT board update (same structure as opponent_update)
 socket.on('bot_update',({id,board,score,lines,level,nextPieces,holdPiece,garbageLines})=>{
+  ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines});
   if(!renderer)return;
   const d=renderer.opBoardData[id];if(!d)return;
   d.board=board;
@@ -4499,25 +6093,30 @@ socket.on('opponent_piece_update',({id,currentPiece})=>{
 });
 
 socket.on('receive_garbage',({lines,fromId})=>{
+  ReplayRecorder.record('receive_garbage',{lines,fromId});
   if(!gameState)return;
   gameState.queueGarbage(lines,fromId);
 });
 
 socket.on('player_dead',({id,name})=>{
+  ReplayRecorder.record('player_dead',{id,name});
   addChatSystem(`💀 ${name} eliminated!`);
   if(isSpectator&&renderer){renderer.markDead&&renderer.markDead(id);return;}
   if(renderer)renderer.opponentGameOver(id);
 });
 
 socket.on('opponent_spin',({id,spinType})=>{
+  ReplayRecorder.record('opponent_spin',{id,spinType});
   if(renderer)renderer.triggerOpponentSpin(id,spinType);
 });
 
 socket.on('opponent_line_clear',({id,count,spinType,isB2B,ren,allClear})=>{
+  ReplayRecorder.record('opponent_line_clear',{id,count,spinType,isB2B,ren,allClear});
   if(renderer)renderer.triggerOpponentLineClear(id,count,spinType,isB2B,ren,allClear);
 });
 
 socket.on('attack_sent',({fromId,toId,attack,clearRows})=>{
+  ReplayRecorder.record('attack_sent',{fromId,toId,attack,clearRows});
   if(!renderer)return;
   if(fromId===myId){
     // My attack going to opponent
