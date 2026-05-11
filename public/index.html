@@ -1060,6 +1060,16 @@
           </div>
 
           <div class="hs-row" style="margin-top:0.3rem">
+            <label>◼ 4Wide Mode</label>
+            <label class="toggle-switch" style="width:46px;height:24px">
+              <input type="checkbox" id="fourwide-toggle" onchange="updateRoomSetting('fourWideMode',this.checked)">
+              <div class="toggle-track" style="border-color:rgba(255,190,11,0.3)"></div>
+              <div class="toggle-knob"></div>
+            </label>
+            <span class="hs-val" style="font-size:0.65rem;color:rgba(255,255,255,0.35)">横4列</span>
+          </div>
+
+          <div class="hs-row" style="margin-top:0.3rem">
             <label>🔴 Record Training</label>
             <label class="toggle-switch" style="width:46px;height:24px">
               <input type="checkbox" id="record-training-toggle" onchange="updateRoomSetting('recordTraining',this.checked)">
@@ -1138,6 +1148,10 @@
     <div class="settings-row">
       <label>GHOST PIECE OPACITY <span class="settings-val" id="ghost-val">40%</span></label>
       <input type="range" id="ghost-opacity" min="0" max="100" value="40" oninput="updateSetting('ghost',this.value)">
+    </div>
+    <div class="settings-row">
+      <label>OVERLAY NUMBER OPACITY <span class="settings-val" id="overlay-opacity-val">33%</span></label>
+      <input type="range" id="overlay-opacity" min="0" max="100" value="33" oninput="updateSetting('overlayOpacity',this.value)">
     </div>
     <div class="settings-row">
       <label>QUALITY <span class="settings-val" id="quality-val">ULTRA</span></label>

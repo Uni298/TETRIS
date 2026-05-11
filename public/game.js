@@ -3,6 +3,7 @@
 // ---- Settings ----
 let mobileControlsEnabled = false; // Mobile controls toggle
 let settings={ghostOpacity:40,quality:'ultra',particles:'high',shake:'on',sfxVolume:70,tilt:'on',softDropInterval:50,dasDelay:133,arrInterval:20,dcdDelay:0,
+  overlayOpacity:33,
   uiLayout:{boardOffsetY:0,boardScale:100,sideUiOffsetY:0,sideUiFontScale:100},
   dpad:{cross:{x:2,y:55,size:160,opacity:80},shift:{x:68,y:80,size:80,opacity:80},harddrop:{x:79,y:68,size:80,opacity:80},z:{x:90,y:80,size:80,opacity:80},swapCenterDown:false}};
 function loadSettings(){
@@ -32,6 +33,7 @@ function loadSettings(){
 function saveSettings(){document.cookie='tetrix_settings='+encodeURIComponent(JSON.stringify(settings))+'; max-age=31536000; path=/';}
 function updateSetting(key,val){
   if(key==='ghost'){settings.ghostOpacity=parseInt(val);document.getElementById('ghost-val').textContent=val+'%';}
+  else if(key==='overlayOpacity'){settings.overlayOpacity=parseInt(val);document.getElementById('overlay-opacity-val').textContent=val+'%';}
   else if(key==='quality'){settings.quality=val;document.getElementById('quality-val').textContent=val==='minimum'?'MINIMUM':val==='ultra'?'ULTRA':val.toUpperCase();}
   else if(key==='particles')settings.particles=val;
   else if(key==='shake')settings.shake=val;
@@ -160,6 +162,7 @@ let fortyLineStartTime=0;
 let blitzMode=false;
 let blitzTimer=null;
 let blitzStartTime=0;
+let fourWideMode=false; // 4Wideモード（ボード幅4列）
 let isSpectator=false; // 観戦モードフラグ
 socket.on('connect',()=>{
   myId=socket.id;
@@ -703,6 +706,7 @@ function updateRoomSettingsUI(rs){
   const asTog=document.getElementById('allspin-toggle');if(asTog)asTog.checked=!!(rs.allspinMode);
   const flTog=document.getElementById('fortyline-toggle');if(flTog)flTog.checked=!!(rs.fortyLineMode);
   const blTog=document.getElementById('blitz-toggle');if(blTog)blTog.checked=!!(rs.blitzMode);
+  const fwTog=document.getElementById('fourwide-toggle');if(fwTog)fwTog.checked=!!(rs.fourWideMode);
   const recTog=document.getElementById('record-training-toggle');if(recTog)recTog.checked=!!(rs.recordTraining);
   const vo=document.getElementById('settings-view-content');
   if(vo&&rs){
@@ -719,7 +723,7 @@ function getBotLevelLabel(lvl){
 }
 
 function updateRoomSetting(key,val){
-  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','blitzMode'];
+  const boolKeys=['shogiMode','soloMode','recordTraining','allspinMode','fortyLineMode','blitzMode','fourWideMode'];
   const parsed=boolKeys.includes(key)?(!!val):(parseInt(val)||0);
   roomSettings[key]=parsed;
   socket.emit('set_room_settings',{[key]:parsed});
@@ -748,7 +752,7 @@ function updatePlayerList(players){
 }
 
 // ---- Countdown then start ----
-socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,blitzMode:blm})=>{
+socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSettings:rs,shogiMode:sm,isSolo:solo,allspinMode:asm,fortyLineMode:flm,blitzMode:blm,fourWideMode:fwm})=>{
   // ゲーム開始時は非アクティブタイマーをクリア
   if(_roomInactivityTimer)clearTimeout(_roomInactivityTimer);
   _removeInactivityBtn();
@@ -760,6 +764,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   allspinMode=!!asm;
   fortyLineMode=!!flm;
   blitzMode=!!blm;
+  fourWideMode=!!fwm;
   if(rs)roomSettings={...roomSettings,...rs};
   _pieceCounter=0;
   showScreen('game');
@@ -779,6 +784,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
   if(asm)addChatSystem('🌀 ALLSPIN MODE — スピンをマスターせよ！');
   if(flm)addChatSystem('📦 40 LINE MODE — 40ラインをできるだけ速くクリア！');
   if(blm)addChatSystem('⚡ BLITZ MODE — 2分間でスコアを稼げ！');
+  if(fwm)addChatSystem('◼ 4WIDE MODE — 横4列でプレイ！');
   if(rs&&rs.recordTraining)addChatSystem('🔴 Recording training data...');
 });
 
@@ -797,6 +803,7 @@ function seededRng(seed){
 }
 
 function showCountdown(bagSeed,cb){
+  _recalcBoardSize(); // 4wideモードに応じてBOARD_W/Hを更新
   const container=document.getElementById('pixi-container');
   container.innerHTML='';
   const W=container.clientWidth||window.innerWidth,H=container.clientHeight||window.innerHeight;
@@ -907,6 +914,9 @@ const SFX={
 
 // ---- Constants ----
 const COLS=10,ROWS=20,HIDDEN=3;
+const COLS_4WIDE=4;
+// ゲーム中の実効列数（4wideモードで切り替わる）
+function getGameCols(){return fourWideMode?COLS_4WIDE:COLS;}
 // Sミノを黄緑(0x8BC34A)に変更
 const PIECE_COLORS={I:0x00f5ff,O:0xffbe0b,T:0xcc00ff,S:0x8BC34A,Z:0xff006e,J:0x4361ee,L:0xff8500,G:0x445566};
 const PIECE_SHAPES={
@@ -965,7 +975,7 @@ const SPAWN_Y = HIDDEN - 2; // board[HIDDEN-2] = 枠上部の2マス上
 
 class TetrisGame{
   constructor(bagSeed){
-    this.board=Array.from({length:ROWS+HIDDEN},()=>Array(COLS).fill(0));
+    this.board=Array.from({length:ROWS+HIDDEN},()=>Array(getGameCols()).fill(0));
     this.bag=new Bag(bagSeed);this.nextQueue=[];
     // Fill nextQueue with pre-computed {type, customShape} entries
     for(let i=0;i<6;i++)this.nextQueue.push(this._makeNextEntry(this.bag.next()));
@@ -992,7 +1002,7 @@ class TetrisGame{
     const entry=this.nextQueue.shift();
     this.nextQueue.push(this._makeNextEntry(this.bag.next()));
     const {type, customShape}=entry;
-    this.current={type,rotation:0,x:3,y:SPAWN_Y,customShape};
+    const _spX=Math.floor((getGameCols()-4)/2);this.current={type,rotation:0,x:_spX,y:SPAWN_Y,customShape};
     this.holdUsed=false;this.lastSpin=null;this.lastSpinType=null;this.locking=false;
     if(renderer)renderer._wallBumpActive=false;
     // ゲームオーバー判定: スポーン位置が既存ブロックと重なったら
@@ -1017,7 +1027,7 @@ class TetrisGame{
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
       const nx=piece.x+c+dx,ny=piece.y+r+dy;
-      if(nx<0||nx>=COLS)return false;
+      if(nx<0||nx>=getGameCols())return false;
       if(ny>=ROWS+HIDDEN)return false;
       if(ny>=0&&this.board[ny][nx])return false;
     }
@@ -1075,10 +1085,10 @@ class TetrisGame{
     const type=this.current.type,x=this.current.x,y=this.current.y,rot=this.current.rotation;
     if(type==='T'){
       const corners=[[0,0],[2,0],[0,2],[2,2]];
-      const filled=corners.filter(([cx,cy])=>{const nx=x+cx,ny=y+cy;return(nx<0||nx>=COLS||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&!!this.board[ny]?.[nx]);});
+      const filled=corners.filter(([cx,cy])=>{const nx=x+cx,ny=y+cy;return(nx<0||nx>=getGameCols()||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&!!this.board[ny]?.[nx]);});
       if(filled.length>=3){
         const front={0:[[0,0],[2,0]],1:[[2,0],[2,2]],2:[[0,2],[2,2]],3:[[0,0],[0,2]]}[rot];
-        const ff=front.filter(([cx,cy])=>{const nx=x+cx,ny=y+cy;return(nx<0||nx>=COLS||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&!!this.board[ny]?.[nx]);});
+        const ff=front.filter(([cx,cy])=>{const nx=x+cx,ny=y+cy;return(nx<0||nx>=getGameCols()||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&!!this.board[ny]?.[nx]);});
         this.lastSpin='T';this.lastSpinType=ff.length>=2?'TSPIN':'MINI_TSPIN';
       }
     }
@@ -1196,7 +1206,7 @@ class TetrisGame{
     for(let r=0;r<shape.length;r++)for(let c=0;c<shape[r].length;c++){
       if(!shape[r][c])continue;
       const ny=this.current.y+r,nx=this.current.x+c;
-      if(ny>=0&&ny<ROWS+HIDDEN&&nx>=0&&nx<COLS)this.board[ny][nx]=this.current.type;
+      if(ny>=0&&ny<ROWS+HIDDEN&&nx>=0&&nx<getGameCols())this.board[ny][nx]=this.current.type;
     }
     if(wasSpin){SFX.spinLock();socket.emit('spin_effect',{spinType});ReplayRecorder.record('spin_effect',{spinType});renderer&&renderer.onSpinSparkle(this._lockX,this._lockY,this._lockType,spinType);}
     else SFX.lock();
@@ -1228,27 +1238,68 @@ class TetrisGame{
       // This prevents index shifting bugs when garbage is added simultaneously
       const desc=[...cleared].sort((a,b)=>b-a);
       for(const idx of desc)this.board.splice(idx,1);
-      for(let i=0;i<count;i++)this.board.unshift(Array(COLS).fill(0));
+      for(let i=0;i<count;i++)this.board.unshift(Array(getGameCols()).fill(0));
 
-      // Now cancel garbage with cleared lines, then apply remainder
+      // 180°スピン: ライン消去が1枚以上あった場合のみスピン有効（傾きなし）
+      if(is180Spin&&count>=1){isSpin=true;}
+      this.combo++;this.ren++;
+      if(this.ren>1)SFX.ren(this.ren);
+
+      // ── Attack Calculation ──────────────────────────────────────
+      const isPenta=count===5;
+      const isB2B=this.b2b&&(count===4||isPenta||(isSpin&&!isMini));
+      
+      let attack=0;
+      if(isPenta){
+        attack=6;
+        if(isB2B)attack+=1;
+        if(this.combo>0)attack+=Math.floor(this.combo/2);
+      }
+      else{
+        if(isTSpin&&!isMini)attack={1:2,2:4,3:6}[count]||0;
+        else if(isMini)attack={1:0,2:1}[count]||0;
+        else attack={1:0,2:1,3:2,4:4}[count]||0;
+        if(isB2B&&attack>0)attack+=1;
+        if(this.combo>0)attack+=Math.floor(this.combo/2);
+        // REN攻撃テーブル
+        const renAttackTable=[0,0,1,1,2,2,3,3,4,4,4,5];
+        const renAtk=renAttackTable[Math.min(this.ren,11)]||5;
+        if(this.ren>=2)attack+=renAtk;
+      }
+
+      // Perfect Clear bonus (Additive)
+      if(allClear){
+        attack += 10;
+      }
+
+      // ── Garbage Cancellation ────────────────────────────────────
+      // 相殺: Pendingのゴミ（queue全体）を対象にする
+      let cancelPower=attack;
+      // 到着が近い順（readyAtが小さい順）に相殺
+      this.garbageQueue.sort((a,b)=>a.readyAt-b.readyAt);
+      for(let i=0;i<this.garbageQueue.length&&cancelPower>0;i++){
+        const canCancel=Math.min(this.garbageQueue[i].lines,cancelPower);
+        this.garbageQueue[i].lines-=canCancel;
+        cancelPower-=canCancel;
+      }
+      this.garbageQueue=this.garbageQueue.filter(g=>g.lines>0);
+      // 送信される攻撃は相殺後の残り
+      attack=cancelPower;
+
+      // すぐにせり上がるゴミ（armed）を判定
       const now=performance.now();
       const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
       this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
-      // B2B判定はこの後に行うため、ここではまず通常キャンセル数を仮置き
-      // (isB2B確定後に再計算)
-      let cancel=count; // 仮: isB2B確定後に更新
-      for(let i=0;i<armed.length&&cancel>0;i++){
-        const sub=Math.min(armed[i].lines,cancel);armed[i].lines-=sub;cancel-=sub;
-      }
+      
       const remaining=armed.filter(g=>g.lines>0);
       // コンボ中（ren>=1）はゴミを適用しない
       if(remaining.length>0&&this.ren<1){
         const groups=groupByBatch(remaining);
         for(const grp of groups){
-          const holeCol=grp[0].holeCol!==undefined?grp[0].holeCol:Math.floor(Math.random()*COLS);
+          const holeCol=grp[0].holeCol!==undefined?grp[0].holeCol:Math.floor(Math.random()*getGameCols());
           for(const chunk of grp){
             const col=chunk.holeCol!==undefined?chunk.holeCol:holeCol;
-            for(let i=0;i<chunk.lines;i++){const row=Array(COLS).fill('G');row[col]=0;this.board.push(row);this.board.shift();if(this.current)this.current.y=Math.max(0,this.current.y-1);}
+            for(let i=0;i<chunk.lines;i++){const row=Array(getGameCols()).fill('G');row[col]=0;this.board.push(row);this.board.shift();if(this.current)this.current.y=Math.max(0,this.current.y-1);}
           }
         }
         SFX.garbage();renderer&&renderer.onGarbageApplied(remaining.reduce((a,b)=>a+b.lines,0));
@@ -1257,21 +1308,11 @@ class TetrisGame{
         for(const g of remaining)this.garbageQueue.unshift(g);
       }
 
-      // 180°スピン: ライン消去が1枚以上あった場合のみスピン有効（傾きなし）
-      if(is180Spin&&count>=1){isSpin=true;}
-      this.combo++;this.ren++;
-      if(this.ren>1)SFX.ren(this.ren);
-      // 5-line clear (mutation mode): always B2B-eligible, not counted in standard B2B chain
-      const isPenta=count===5;
-      const isB2B=this.b2b&&(count===4||isPenta||(isSpin&&!isMini));
-      // B2B継続中は相殺ミノを2倍にする（isB2B確定後に更新）
-      if(isB2B) cancel=count*2;
-      // B2B解除チェック: B2B継続中なのに今回はB2B条件を満たさない場合
+      // Update B2B state after calculation
       const wasB2B=this.b2b;
       const prevB2bCount=this.b2bCount;
       if(count===4||isPenta||(isSpin&&!isMini)){if(this.b2b){this.b2bCount++;SFX.b2b();}this.b2b=true;}
       else{
-        // B2B解除: カウント/2 切り捨て段を相手に送る
         if(wasB2B&&prevB2bCount>=2){
           const bonusAtk=Math.floor(prevB2bCount/2);
           if(bonusAtk>0){
@@ -1285,25 +1326,6 @@ class TetrisGame{
       const pts=this.calcScore(count,isTSpin,isMini,isB2B,this.combo);
       this.score+=pts;this.lines+=count;this.level=Math.floor(this.lines/10)+1;
 
-      let attack=0;
-      if(allClear){attack=10;}
-      else if(isPenta){
-        // 5-line clear = 6 lines attack (mutation bonus)
-        attack=6;
-        if(isB2B)attack+=1;
-        if(this.combo>0)attack+=Math.floor(this.combo/2);
-      }
-      else{
-        if(isTSpin&&!isMini)attack={1:2,2:4,3:6}[count]||0;
-        else if(isMini)attack={1:0,2:1}[count]||0;
-        else attack={1:0,2:1,3:2,4:4}[count]||0;
-        if(isB2B&&attack>0)attack+=1;
-        if(this.combo>0)attack+=Math.floor(this.combo/2);
-        // REN攻撃テーブル（1段でもREN2以上なら攻撃）
-        const renAttackTable=[0,0,1,1,2,2,3,3,4,4,4,5];
-        const renAtk=renAttackTable[Math.min(this.ren,11)]||5;
-        if(this.ren>=2)attack+=renAtk;
-      }
       if(attack>0||fortyLineMode)socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines});
       // 相手に視覚エフェクトを送信
       const lcEv={count,spinType,isB2B:isB2B||false,ren:this.ren,allClear};
@@ -1375,7 +1397,7 @@ class TetrisGame{
     // 穴位置でグループ化
     const groups=[];
     for(const chunk of armed){
-      const col=chunk.holeCol!==undefined?chunk.holeCol:Math.floor(Math.random()*COLS);
+      const col=chunk.holeCol!==undefined?chunk.holeCol:Math.floor(Math.random()*getGameCols());
       let merged=false;
       for(const g of groups){
         if(g.col===col){g.count+=chunk.lines;merged=true;break;}
@@ -1385,7 +1407,7 @@ class TetrisGame{
     // 各グループの行データを作成
     const groupRows=groups.map(g=>{
       const rows=[];
-      for(let i=0;i<g.count;i++){const row=Array(COLS).fill('G');row[g.col]=0;rows.push(row);}
+      for(let i=0;i<g.count;i++){const row=Array(getGameCols()).fill('G');row[g.col]=0;rows.push(row);}
       return rows;
     });
     let idx=0;
@@ -1427,7 +1449,7 @@ class TetrisGame{
 
   queueGarbage(lines,fromId){
     const readyAt=performance.now()+3000;
-    const holeCol=Math.floor(Math.random()*COLS);
+    const holeCol=Math.floor(Math.random()*getGameCols());
     this.garbageQueue.push({lines,fromId,readyAt,holeCol});
     renderer&&renderer.onGarbageIncoming(lines,fromId);
 
@@ -1476,7 +1498,7 @@ class TetrisGame{
       const nextCustomShape=this.holdCustomShape||null;
       this.holdPiece=type;
       this.holdCustomShape=customShape;
-      this.current={type:nextType,rotation:0,x:3,y:SPAWN_Y,customShape:nextCustomShape};
+      const _spX2=Math.floor((getGameCols()-4)/2);this.current={type:nextType,rotation:0,x:_spX2,y:SPAWN_Y,customShape:nextCustomShape};
       this.lastSpin=null;this.lastSpinType=null;this.locking=false;
       if(renderer)renderer._wallBumpActive=false;
       // ゲームオーバー: ホールド後スポーン位置が既存ブロックと重なったら
@@ -1517,7 +1539,10 @@ function groupByBatch(items){
 }
 
 // ---- PixiJS Renderer ----
-const CELL=28,BOARD_W=COLS*CELL,BOARD_H=ROWS*CELL;
+const CELL=28;
+// BOARD_W/Hはゲーム開始時に動的に計算（4wideモード対応）
+let BOARD_W=COLS*CELL,BOARD_H=ROWS*CELL;
+function _recalcBoardSize(){BOARD_W=getGameCols()*CELL;BOARD_H=ROWS*CELL;}
 const ABOVE_BOARD=CELL*2; // 枠は可視エリア上2マス分
 
 function initGame(players,bagSeed){
@@ -1626,10 +1651,10 @@ const ALLSPIN_CHALLENGES = [
 // rows: 20行分（上→下）、0=空 1=ブロック
 function makeBoardFromRows(rows, rng) {
   const colors = ['I','L','J','S','Z','T','O'];
-  const b = Array.from({length:ROWS+HIDDEN}, ()=>Array(COLS).fill(0));
+  const b = Array.from({length:ROWS+HIDDEN}, ()=>Array(getGameCols()).fill(0));
   for(let i=0;i<rows.length&&i<ROWS;i++){
     const boardRow = HIDDEN + i;
-    for(let c=0;c<COLS;c++){
+    for(let c=0;c<getGameCols();c++){
       if(rows[i][c]) b[boardRow][c] = colors[Math.floor(rng()*colors.length)];
     }
   }
@@ -2189,6 +2214,13 @@ function _createFortyLineUI() {
   _updateFortyLineUI();
 }
 
+function _getOverlayAlpha(hex2) {
+  // settings.overlayOpacityを0-100として16進2桁に変換
+  const pct = (settings.overlayOpacity !== undefined ? settings.overlayOpacity : 33) / 100;
+  const v = Math.round(pct * 255).toString(16).padStart(2,'0');
+  return v;
+}
+
 function _updateFortyLineUI() {
   const remaining = Math.max(0, 40 - (gameState ? gameState.lines : 0));
   const elapsed = performance.now() - fortyLineStartTime;
@@ -2197,7 +2229,9 @@ function _updateFortyLineUI() {
   const tenths = Math.floor((elapsed % 1000) / 100);
   if (renderer && renderer._modeOverlayText) {
     renderer._modeOverlayText.text = String(remaining).padStart(2, '0');
-    const fillCol = remaining <= 10 ? '#ff006e55' : remaining <= 20 ? '#ffffff44' : '#ffffff33';
+    const a = _getOverlayAlpha();
+    const aHi = Math.min(255, Math.round(parseInt(a,16)*1.5)).toString(16).padStart(2,'0');
+    const fillCol = remaining <= 10 ? `#ff006e${aHi}` : remaining <= 20 ? `#ffffff${aHi}` : `#ffffff${a}`;
     renderer._modeOverlayText.style = new PIXI.TextStyle({
       fontFamily: 'Orbitron, sans-serif',
       fontSize: Math.round(BOARD_W * 0.55),
@@ -2331,7 +2365,9 @@ function _updateBlitzUI() {
   const secs = Math.floor((remaining % 60000) / 1000);
   if (renderer && renderer._modeOverlayText) {
     renderer._modeOverlayText.text = `${mins}:${String(secs).padStart(2,'0')}`;
-    const fillCol = remaining < 10000 ? '#ff006e55' : remaining < 30000 ? '#ffffff44' : '#ffffff2a';
+    const a = _getOverlayAlpha();
+    const aHi = Math.min(255, Math.round(parseInt(a,16)*1.5)).toString(16).padStart(2,'0');
+    const fillCol = remaining < 10000 ? `#ff006e${aHi}` : remaining < 30000 ? `#ffffff${aHi}` : `#ffffff${a}`;
     renderer._modeOverlayText.style = new PIXI.TextStyle({
       fontFamily: 'Orbitron, sans-serif',
       fontSize: Math.round(BOARD_W * 0.42),
@@ -3411,7 +3447,7 @@ class GameRenderer{
   }
 
   buildOpponentBoards(){
-    const oCell=12,oBW=COLS*oCell;
+    const oCell=12,oBW=getGameCols()*oCell;
     const showAbove=2,oBH=(ROWS+showAbove)*oCell;
     const sc=this._uiScale||1;
     // 全対戦相手のボードを作成（表示/非表示はupdateVisibleOpponentsで制御）
@@ -3428,7 +3464,7 @@ class GameRenderer{
       // Grid lines for HIGH/ULTRA
       if(settings.quality==='high'||settings.quality==='ultra'){
         bg.lineStyle(0.3,0x001833,0.4);
-        for(let c=1;c<COLS;c++){bg.moveTo(c*oCell,0);bg.lineTo(c*oCell,oBH);}
+        for(let c=1;c<getGameCols();c++){bg.moveTo(c*oCell,0);bg.lineTo(c*oCell,oBH);}
         for(let r=1;r<ROWS+showAbove;r++){bg.moveTo(0,r*oCell);bg.lineTo(oBW,r*oCell);}
       }
       cont.addChild(bg);
@@ -3515,7 +3551,7 @@ class GameRenderer{
     bg.beginFill(0x000010,0.95);bg.drawRect(0,0,BOARD_W,BOARD_H);bg.endFill();
     // ボード全体のグリッド線（1ブロック間隔）
     bg.lineStyle(0.5,0x0a2a4a,0.85);
-    for(let c=0;c<=COLS;c++){bg.moveTo(c*CELL,0);bg.lineTo(c*CELL,BOARD_H);}
+    for(let c=0;c<=getGameCols();c++){bg.moveTo(c*CELL,0);bg.lineTo(c*CELL,BOARD_H);}
     for(let r=0;r<=ROWS;r++){bg.moveTo(0,r*CELL);bg.lineTo(BOARD_W,r*CELL);}
     this.boardCont.addChild(bg);
     this.boardBorder=new PIXI.Graphics();
@@ -3636,7 +3672,7 @@ class GameRenderer{
 
   drawBoard(){
     const g=this.boardGfx;g.clear();
-    for(let r=0;r<ROWS+HIDDEN;r++)for(let c=0;c<COLS;c++){
+    for(let r=0;r<ROWS+HIDDEN;r++)for(let c=0;c<getGameCols();c++){
       const v=this.gs.board[r][c];if(!v)continue;
       const dy=(r-HIDDEN)*CELL;
       this.drawCell(g,c*CELL,dy,CELL,v,r<HIDDEN?0.55:1);
@@ -3716,7 +3752,7 @@ class GameRenderer{
       const offset=d.board.length>ROWS?HIDDEN:0;
       for(let r=-showAbove;r<ROWS;r++){
         const row=d.board[r+offset];if(!row)continue;
-        for(let c=0;c<COLS;c++){
+        for(let c=0;c<getGameCols();c++){
           const v=row[c];if(!v)continue;
           const dy=(r+showAbove)*cell;
           this.drawCell(g,c*cell,dy,cell,v,r<0?0.4:1);
@@ -4598,7 +4634,7 @@ class GameRenderer{
       cleared.forEach(r=>{
         const dr=r-HIDDEN;if(dr<0)return;
         const n=settings.particles==='high'?14:5;
-        for(let c=0;c<COLS;c++){
+        for(let c=0;c<getGameCols();c++){
           const col=PIECE_COLORS[this.gs.board[r]?.[c]]||0xffffff;
           for(let i=0;i<n;i++)this.spawnParticle(this.mainBX+c*CELL+CELL/2,this.mainBY+dr*CELL+CELL/2,col);
         }
@@ -5138,7 +5174,7 @@ class GameRenderer{
 
   onGarbageIncoming(lines,fromId){
     const d=this.opBoardData[fromId];if(!d)return;
-    const sx=d.origX+(COLS*d.cell)/2,sy=d.origY+(d.boardH||ROWS*d.cell)/2;
+    const sx=d.origX+(getGameCols()*d.cell)/2,sy=d.origY+(d.boardH||ROWS*d.cell)/2;
     const tx=this.mainBX-8,ty=this.mainBY+BOARD_H*0.5;
     const isBig=lines>=4;
     const color=isBig?0x00f5ff:0xff3333;
@@ -5212,11 +5248,11 @@ class GameRenderer{
     // Group connected cells of same type using flood-fill (BFS)
     // to approximate "mino pieces" without needing original placement data
     const board=gs.board;
-    const visited=Array.from({length:ROWS+HIDDEN},()=>Array(COLS).fill(false));
+    const visited=Array.from({length:ROWS+HIDDEN},()=>Array(getGameCols()).fill(false));
     const groups=[];
 
     for(let r=0;r<ROWS+HIDDEN;r++){
-      for(let c=0;c<COLS;c++){
+      for(let c=0;c<getGameCols();c++){
         const v=board[r][c];
         if(!v||v===0||visited[r][c])continue;
         // BFS to find connected cells of same type (max 4 cells = one piece)
@@ -5228,7 +5264,7 @@ class GameRenderer{
           cells.push([cr,cc]);
           for(const[dr,dc]of[[-1,0],[1,0],[0,-1],[0,1]]){
             const nr=cr+dr,nc=cc+dc;
-            if(nr>=0&&nr<ROWS+HIDDEN&&nc>=0&&nc<COLS&&
+            if(nr>=0&&nr<ROWS+HIDDEN&&nc>=0&&nc<getGameCols()&&
                !visited[nr][nc]&&board[nr][nc]===v){
               visited[nr][nc]=true;
               queue.push([nr,nc]);
@@ -5537,7 +5573,7 @@ class GameRenderer{
     // 積み上がりの最高行を計算（board配列上のインデックス）
     let topRow=ROWS+HIDDEN; // 何も積まれていない = 最大値
     for(let r=0;r<ROWS+HIDDEN;r++){
-      for(let c=0;c<COLS;c++){
+      for(let c=0;c<getGameCols();c++){
         if(this.gs.board[r][c]){topRow=r;break;}
       }
       if(topRow<ROWS+HIDDEN)break;
@@ -5915,9 +5951,9 @@ class SpectatorRenderer{
     const n=this.players.length;
     if(n===0)return;
     // セルサイズをプレイヤー数と画面幅から自動計算
-    const maxCell=Math.floor(Math.min(this.W/(n*COLS+n+1), this.H/(ROWS+4)));
+    const maxCell=Math.floor(Math.min(this.W/(n*getGameCols()+n+1), this.H/(ROWS+4)));
     const cell=Math.max(8,Math.min(22,maxCell));
-    const bw=COLS*cell,bh=ROWS*cell;
+    const bw=getGameCols()*cell,bh=ROWS*cell;
     const totalW=n*bw+(n+1)*Math.floor(cell*0.8);
     const startX=(this.W-totalW)/2;
     const startY=(this.H-bh)/2;
@@ -5931,7 +5967,7 @@ class SpectatorRenderer{
       bg.lineStyle(1,borderCol,0.5);bg.drawRect(0,0,bw,bh);
       // グリッド
       bg.lineStyle(0.3,0x0a2a4a,0.6);
-      for(let c=1;c<COLS;c++){bg.moveTo(c*cell,0);bg.lineTo(c*cell,bh);}
+      for(let c=1;c<getGameCols();c++){bg.moveTo(c*cell,0);bg.lineTo(c*cell,bh);}
       for(let r=1;r<ROWS;r++){bg.moveTo(0,r*cell);bg.lineTo(bw,r*cell);}
       cont.addChild(bg);
       const nameCol=isBot?0xffbe0b:0x00f5ff;
@@ -5959,7 +5995,7 @@ class SpectatorRenderer{
     const HIDDEN_ROWS=3;
     if(!d.board){g.beginFill(0x000010,0.3);g.drawRect(0,0,d.bw,bh);g.endFill();return;}
     for(let r=HIDDEN_ROWS;r<ROWS+HIDDEN_ROWS;r++){
-      for(let c=0;c<COLS;c++){
+      for(let c=0;c<getGameCols();c++){
         const v=d.board[r]&&d.board[r][c];if(!v)continue;
         const color=PIECE_COLORS[v]||0x334455;
         const dy=(r-HIDDEN_ROWS)*cell,dx=c*cell,s=cell-1;
@@ -6852,6 +6888,10 @@ document.addEventListener('DOMContentLoaded',()=>{
   loadSettings();
   document.getElementById('ghost-opacity').value=settings.ghostOpacity;
   document.getElementById('ghost-val').textContent=settings.ghostOpacity+'%';
+  const ooEl=document.getElementById('overlay-opacity');
+  const ooValEl=document.getElementById('overlay-opacity-val');
+  if(ooEl)ooEl.value=settings.overlayOpacity!==undefined?settings.overlayOpacity:33;
+  if(ooValEl)ooValEl.textContent=(settings.overlayOpacity!==undefined?settings.overlayOpacity:33)+'%';
   document.getElementById('quality-select').value=settings.quality;
   document.getElementById('quality-val').textContent=settings.quality==='minimum'?'MINIMUM':settings.quality==='ultra'?'ULTRA':settings.quality.toUpperCase();
   document.getElementById('particles-select').value=settings.particles;

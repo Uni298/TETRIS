@@ -76,6 +76,9 @@ const lastRoom = {};
 
 // ── Constants (mirror client) ──────────────────────────────────────
 const COLS = 10, ROWS = 20, HIDDEN = 3;
+// 4Wideモード時のボード幅
+const COLS_4WIDE = 4;
+
 const PIECE_SHAPES = {
   I:[[[0,0,0,0],[1,1,1,1],[0,0,0,0],[0,0,0,0]],[[0,0,1,0],[0,0,1,0],[0,0,1,0],[0,0,1,0]],[[0,0,0,0],[0,0,0,0],[1,1,1,1],[0,0,0,0]],[[0,1,0,0],[0,1,0,0],[0,1,0,0],[0,1,0,0]]],
   O:[[[0,1,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],[[0,1,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],[[0,1,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]],[[0,1,1,0],[0,1,1,0],[0,0,0,0],[0,0,0,0]]],
@@ -101,16 +104,16 @@ class Bag {
   next() { if (!this.bag.length) this.fill(); return this.bag.pop(); }
 }
 
-function emptyBoard() { return Array.from({length:ROWS+HIDDEN},()=>Array(COLS).fill(0)); }
 function cloneBoard(b) { return b.map(r=>[...r]); }
 function getShape(type, rot) { return PIECE_SHAPES[type][((rot%4)+4)%4]; }
 
 function isValid(board, type, rot, x, y) {
   const shape = getShape(type, rot);
+  const cols = board[0].length;
   for (let r = 0; r < shape.length; r++) for (let c = 0; c < shape[r].length; c++) {
     if (!shape[r][c]) continue;
     const nx = x+c, ny = y+r;
-    if (nx < 0 || nx >= COLS || ny >= ROWS+HIDDEN) return false;
+    if (nx < 0 || nx >= cols || ny >= ROWS+HIDDEN) return false;
     if (ny >= 0 && board[ny] && board[ny][nx]) return false;
   }
   return true;
@@ -125,36 +128,39 @@ function hardDropY(board, type, rot, x, startY) {
 function placePiece(board, type, rot, x, y) {
   const b = cloneBoard(board);
   const shape = getShape(type, rot);
+  const cols = board[0].length;
   for (let r = 0; r < shape.length; r++) for (let c = 0; c < shape[r].length; c++) {
     if (!shape[r][c]) continue;
     const ny = y+r, nx = x+c;
-    if (ny >= 0 && ny < ROWS+HIDDEN && nx >= 0 && nx < COLS) b[ny][nx] = type;
+    if (ny >= 0 && ny < ROWS+HIDDEN && nx >= 0 && nx < cols) b[ny][nx] = type;
   }
   return b;
 }
 
 function clearLines(board) {
   const b = cloneBoard(board);
+  const cols = board[0].length;
   const cleared = [];
   for (let r = ROWS+HIDDEN-1; r >= 0; r--) {
     if (b[r].every(c => c !== 0)) cleared.push(r);
   }
-  for (const r of [...cleared].sort((a,v)=>v-a)) { b.splice(r,1); b.unshift(Array(COLS).fill(0)); }
+  for (const r of [...cleared].sort((a,v)=>v-a)) { b.splice(r,1); b.unshift(Array(cols).fill(0)); }
   return { board: b, lines: cleared.length };
 }
 
 function detectTspin(board, type, rot, x, y) {
   if (type !== 'T') return null;
+  const cols = board[0].length;
   const corners = [[0,0],[2,0],[0,2],[2,2]];
   const filled = corners.filter(([cx,cy]) => {
     const nx=x+cx, ny=y+cy;
-    return (nx<0||nx>=COLS||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&board[ny]&&board[ny][nx]);
+    return (nx<0||nx>=cols||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&board[ny]&&board[ny][nx]);
   });
   if (filled.length < 3) return null;
   const front = {0:[[0,0],[2,0]],1:[[2,0],[2,2]],2:[[0,2],[2,2]],3:[[0,0],[0,2]]}[rot];
   const ff = front.filter(([cx,cy]) => {
     const nx=x+cx, ny=y+cy;
-    return (nx<0||nx>=COLS||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&board[ny]&&board[ny][nx]);
+    return (nx<0||nx>=cols||ny<0||ny>=ROWS+HIDDEN)||(ny>=0&&board[ny]&&board[ny][nx]);
   });
   return ff.length >= 2 ? 'TSPIN' : 'MINI_TSPIN';
 }
@@ -165,6 +171,7 @@ function detectTspin(board, type, rot, x, y) {
 function detectSpin(board, type, rot, x, y, wasKicked) {
   if (type === 'T') return detectTspin(board, type, rot, x, y);
 
+  const cols = board[0].length;
   // 着地チェック（下に何かあるか）
   const shape = getShape(type, rot);
   let atBottom = false;
@@ -191,16 +198,17 @@ function detectSpin(board, type, rot, x, y, wasKicked) {
 }
 
 function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) {
+  const cols = board[0].length;
   // Column heights
-  const heights = Array(COLS).fill(0);
-  for (let c = 0; c < COLS; c++) {
+  const heights = Array(cols).fill(0);
+  for (let c = 0; c < cols; c++) {
     for (let r = 0; r < ROWS+HIDDEN; r++) {
       if (board[r][c]) { heights[c] = ROWS+HIDDEN - r; break; }
     }
   }
   const maxH = Math.max(...heights);
   const sumH  = heights.reduce((a,b)=>a+b,0);
-  const avgH  = sumH / COLS;
+  const avgH  = sumH / cols;
 
   // ── Garbage row analysis ────────────────────────────────────────
   // Count garbage rows ('G' cells) and compute how buried they are
@@ -221,7 +229,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   let holes = 0, coveredDepth = 0;
   // Also detect "floor gaps": cells directly on top of empty space at the bottom
   let floorGaps = 0;
-  for (let c = 0; c < COLS; c++) {
+  for (let c = 0; c < cols; c++) {
     let inBlock = false, d = 0;
     for (let r = 0; r < ROWS+HIDDEN; r++) {
       if (board[r][c])  { inBlock = true; d = 0; }
@@ -243,7 +251,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   // Penalty for any filled cell that has empty space directly below it
   let overhangs = 0;
   for (let r = 1; r < ROWS+HIDDEN; r++) {
-    for (let c = 0; c < COLS; c++) {
+    for (let c = 0; c < cols; c++) {
       if (board[r-1][c] !== 0 && board[r][c] === 0) {
         // Check if there's a hole below
         let hasHoleBelow = false;
@@ -258,13 +266,26 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
 
   // Bumpiness
   let bumpiness = 0;
-  for (let c = 0; c < COLS-1; c++) bumpiness += Math.abs(heights[c]-heights[c+1]);
+  for (let c = 0; c < cols-1; c++) bumpiness += Math.abs(heights[c]-heights[c+1]);
 
   let score = 0;
 
-  // ── Line clear bonuses ─────────────────────────────────────────
-  const linePts = [0, 50, 250, 600, 1800];
-  score += linePts[Math.min(linesCleared, 4)] || 0;
+  // ── 4WIDE MODE optimization ────────────────────────────────────
+  if (cols <= 4) {
+    // In 4wide mode, prioritize REN (combos) and line clearing
+    score += (ren || 0) * 1200;
+    score += (combo || 0) * 500;
+    if (linesCleared > 0) {
+      // Encourage clearing only 1 line at a time to maximize REN chain
+      if (linesCleared === 1) score += 3000;
+      else score += 500;
+    }
+  } else {
+    // Normal mode line clear bonuses
+    const linePts = [0, 50, 250, 600, 1800];
+    score += linePts[Math.min(linesCleared, 4)] || 0;
+  }
+
   // Extra bonus for clearing when stack is dangerous
   if (linesCleared > 0 && maxH > 10) score += linesCleared * (maxH - 10) * 40;
   // Spin bonuses
@@ -305,9 +326,9 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   // ── I-piece gap penalty ────────────────────────────────────────
   // Penalize having 2+ consecutive columns that are both significantly
   // lower than their neighbors (forms a shaft that blocks I placement)
-  for (let c = 0; c < COLS - 1; c++) {
+  for (let c = 0; c < cols - 1; c++) {
     const leftWall  = c > 0        ? heights[c-1] : heights[c] + 4;
-    const rightWall = c < COLS - 2 ? heights[c+2] : heights[c+1] + 4;
+    const rightWall = c < cols - 2 ? heights[c+2] : heights[c+1] + 4;
     const shaftDepth = Math.min(leftWall, rightWall) - Math.max(heights[c], heights[c+1]);
     if (shaftDepth >= 3) {
       // A 2-wide shaft of depth >= 3 could trap an I-piece
@@ -322,9 +343,9 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   if (maxH <= 8) {
     let wellCount = 0;
     let bestWellCol = -1, bestWellDepth = 0;
-    for (let c = 0; c < COLS; c++) {
+    for (let c = 0; c < cols; c++) {
       const lh = c > 0      ? heights[c-1] : 99;
-      const rh = c < COLS-1 ? heights[c+1] : 99;
+      const rh = c < cols-1 ? heights[c+1] : 99;
       const w = Math.min(lh - heights[c], rh - heights[c]);
       if (w >= 2) {
         wellCount++;
@@ -332,7 +353,7 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
       }
     }
     if (bestWellDepth >= 2) {
-      const edgeDist = Math.min(bestWellCol, COLS-1-bestWellCol);
+      const edgeDist = Math.min(bestWellCol, cols-1-bestWellCol);
       const edgeMult = edgeDist === 0 ? 1.5 : edgeDist === 1 ? 0.8 : 0.2;
       score += Math.min(bestWellDepth, 6) * 14 * edgeMult;
     }
@@ -343,17 +364,17 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
   if (maxH <= 12) score += 0; // T-spin setup bonus disabled
 
   // Variance penalty (flat is good)
-  const variance = heights.reduce((a,h)=>a+Math.pow(h-avgH,2),0) / COLS;
+  const variance = heights.reduce((a,h)=>a+Math.pow(h-avgH,2),0) / cols;
   score -= variance * 0.8;
 
   // ── 縦積み（narrow tall column）ペナルティ ──────────────────────
   // 幅1〜2の高い柱は隙間に入れられない原因になるので強くペナルティ
-  for (let c = 0; c < COLS; c++) {
+  for (let c = 0; c < cols; c++) {
     const h = heights[c];
     if (h < 4) continue;
     // 隣の列との差: 両方の隣より高い場合は突出柱
     const lh = c > 0 ? heights[c-1] : 0;
-    const rh = c < COLS-1 ? heights[c+1] : 0;
+    const rh = c < cols-1 ? heights[c+1] : 0;
     const protrude = h - Math.max(lh, rh);
     if (protrude >= 3) {
       // 孤立した突出柱：穴を作る元凶
@@ -365,19 +386,19 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
     }
   }
   // 単独セル（隣に何もない1セル幅の柱）の最上段ペナルティ
-  for (let c = 0; c < COLS; c++) {
+  for (let c = 0; c < cols; c++) {
     if (heights[c] < 2) continue;
     const topRow = ROWS + HIDDEN - heights[c];
     const lEmpty = c === 0 || !board[topRow][c-1];
-    const rEmpty = c === COLS-1 || !board[topRow][c+1];
+    const rEmpty = c === cols-1 || !board[topRow][c+1];
     if (lEmpty && rEmpty && heights[c] >= 3) {
       // 両隣が空で単独柱 → 非常に詰めにくい
       score -= heights[c] * 25;
     }
   }
-  for (let c = 0; c < COLS - 1; c++) {
+  for (let c = 0; c < cols - 1; c++) {
     const leftNeighH  = c > 0        ? heights[c-1] : heights[c+2] || 0;
-    const rightNeighH = c < COLS - 2 ? heights[c+2] : heights[c-1] || 0;
+    const rightNeighH = c < cols - 2 ? heights[c+2] : heights[c-1] || 0;
     const avgNeigh = (leftNeighH + rightNeighH) / 2;
     const gap0 = avgNeigh - heights[c];
     const gap1 = avgNeigh - heights[c+1];
@@ -392,8 +413,9 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
 
 // T-spin setup evaluation (looks for actual TSD-ready slots)
 function evaluateTspinSetup(board, heights) {
+  const cols = board[0].length;
   let bonus = 0;
-  for (let c = 1; c < COLS-1; c++) {
+  for (let c = 1; c < cols-1; c++) {
     const lh = heights[c-1], ch = heights[c], rh = heights[c+1];
     const ld = lh - ch, rd = rh - ch;
     if (ld >= 2 && rd >= 2 && ch >= 2) {
@@ -401,7 +423,7 @@ function evaluateTspinSetup(board, heights) {
       const bRow = ROWS+HIDDEN - ch;
       if (bRow >= 0 && bRow < ROWS+HIDDEN) {
         const hasL = c > 0      && board[bRow] && board[bRow][c-1];
-        const hasR = c < COLS-1 && board[bRow] && board[bRow][c+1];
+        const hasR = c < cols-1 && board[bRow] && board[bRow][c+1];
         if (hasL && hasR) bonus += 180;
         else if (hasL || hasR) bonus += 80;
       }
@@ -454,6 +476,7 @@ function tryRotate(board, type, rot, x, y, dir) {
 function getAllPlacementsFast(board, type) {
   const results = [];
   const visited = new Set();
+  const cols = board[0].length;
   const add = (rot, x, wasKicked) => {
     if (!isValid(board, type, rot, x, 0)) return;
     const y = hardDropY(board, type, rot, x, 0);
@@ -466,7 +489,7 @@ function getAllPlacementsFast(board, type) {
     results.push({ rot, x, y, board: cleared, lines, spin, type, needsSoftDrop: false });
   };
   for (let rot = 0; rot < 4; rot++) {
-    for (let x = -2; x < COLS + 2; x++) add(rot, x, false);
+    for (let x = -2; x < cols + 2; x++) add(rot, x, false);
   }
   // Spin wall kicks: try each kick offset too
   const kickTypes = ['T', 'S', 'Z', 'L', 'J', 'I'];
@@ -477,7 +500,7 @@ function getAllPlacementsFast(board, type) {
         const key2 = `${fromRot}->${toRot}`;
         const kicks = (type === 'I' ? SRS_KICKS['I'] : SRS_KICKS['default'])[key2] || [];
         for (const [kx] of kicks) {
-          for (let x = -2; x < COLS + 2; x++) add(toRot, x + kx, true);
+          for (let x = -2; x < cols + 2; x++) add(toRot, x + kx, true);
         }
       }
     }
@@ -492,6 +515,7 @@ function getAllPlacementsBFS(board, type) {
   const lockedKeys = new Set();
   const visitedStates = new Set();
   const queue = [];
+  const cols = board[0].length;
 
   const enqueue = (rot, x, y) => {
     const key = `${rot},${x},${y}`;
@@ -503,14 +527,14 @@ function getAllPlacementsBFS(board, type) {
   // Compute direct-drop positions (for needsSoftDrop flag)
   const directDrop = new Set();
   for (let rot = 0; rot < 4; rot++) {
-    for (let x = -2; x < COLS + 2; x++) {
+    for (let x = -2; x < cols + 2; x++) {
       if (!isValid(board, type, rot, x, 0)) continue;
       directDrop.add(`${rot},${x},${hardDropY(board, type, rot, x, 0)}`);
     }
   }
 
   for (let rot = 0; rot < 4; rot++) {
-    for (let x = -2; x < COLS + 2; x++) {
+    for (let x = -2; x < cols + 2; x++) {
       if (isValid(board, type, rot, x, 0)) enqueue(rot, x, 0);
     }
   }
@@ -567,11 +591,12 @@ function getAllPlacementsBFS(board, type) {
 // PCには空きセルが4の倍数で連結されている必要がある
 function checkConnectivity(board) {
   const TOTAL = ROWS + HIDDEN;
-  const visited = Array.from({length: TOTAL}, () => Array(COLS).fill(false));
+  const cols = board[0].length;
+  const visited = Array.from({length: TOTAL}, () => Array(cols).fill(false));
   const components = [];
 
   for (let r = 0; r < TOTAL; r++) {
-    for (let c = 0; c < COLS; c++) {
+    for (let c = 0; c < cols; c++) {
       if (!board[r][c] && !visited[r][c]) {
         // BFS to find connected empty cells
         let size = 0;
@@ -583,7 +608,7 @@ function checkConnectivity(board) {
           size++;
           for (const [dr, dc] of [[-1,0],[1,0],[0,-1],[0,1]]) {
             const nr = cr+dr, nc = cc+dc;
-            if (nr >= 0 && nr < TOTAL && nc >= 0 && nc < COLS && !board[nr][nc] && !visited[nr][nc]) {
+            if (nr >= 0 && nr < TOTAL && nc >= 0 && nc < cols && !board[nr][nc] && !visited[nr][nc]) {
               visited[nr][nc] = true;
               queue.push([nr, nc]);
             }
@@ -600,8 +625,9 @@ function checkConnectivity(board) {
 
 // 列ごとの最高ブロック行を返す（高い列=index小）
 function getBoardHeights(board) {
-  const heights = Array(COLS).fill(0);
-  for (let c = 0; c < COLS; c++) {
+  const cols = board[0].length;
+  const heights = Array(cols).fill(0);
+  for (let c = 0; c < cols; c++) {
     for (let r = 0; r < ROWS + HIDDEN; r++) {
       if (board[r][c]) { heights[c] = ROWS + HIDDEN - r; break; }
     }
@@ -611,12 +637,13 @@ function getBoardHeights(board) {
 
 // 盤面の「PC近さスコア」: 低いほど良い（ソート用）
 function pcProximityScore(board, filledCells) {
+  const cols = board[0].length;
   // 穴・高さ・凸凹度を組み合わせたヒューリスティック
   const heights = getBoardHeights(board);
   const maxH = Math.max(...heights);
   const bumpiness = heights.reduce((a, h, i) => i > 0 ? a + Math.abs(h - heights[i-1]) : a, 0);
   let holes = 0;
-  for (let c = 0; c < COLS; c++) {
+  for (let c = 0; c < cols; c++) {
     let inBlock = false;
     for (let r = 0; r < ROWS + HIDDEN; r++) {
       if (board[r][c]) inBlock = true;
@@ -632,6 +659,7 @@ function pcProximityScore(board, filledCells) {
 // pieces: 試すミノ列（最大10）
 // timeLimitMs: 時間制限
 function findPCSequence(board, pieces, timeLimitMs = 120) {
+  const cols = board[0].length;
   // 盤面の最高行を求める
   let highestRow = -1;
   for (let r = 0; r < ROWS + HIDDEN; r++) {
@@ -645,7 +673,7 @@ function findPCSequence(board, pieces, timeLimitMs = 120) {
   // 埋まっているセル数
   let filled = 0;
   for (let r = 0; r < ROWS + HIDDEN; r++)
-    for (let c = 0; c < COLS; c++)
+    for (let c = 0; c < cols; c++)
       if (board[r][c]) filled++;
 
   const limit = Math.min(pieces.length, 10);
@@ -658,7 +686,7 @@ function findPCSequence(board, pieces, timeLimitMs = 120) {
   if (minPieces < 0) return null;
 
   // 初期連結性チェック（空きセルが4の倍数でない列配置は不可能）
-  const totalEmpty = ROWS * COLS - filled; // visible rows only approx
+  const totalEmpty = ROWS * cols - filled; // visible rows only approx
   // NOTE: 厳密な連結性は初期盤面では省略（速度優先）
 
   const deadline = Date.now() + timeLimitMs;
@@ -667,8 +695,8 @@ function findPCSequence(board, pieces, timeLimitMs = 120) {
   // ── 高速な盤面評価ヘルパー ────────────────────────────────────
   function getBoardInfo(b) {
     let filled = 0, holes = 0, maxH = 0;
-    const heights = Array(COLS).fill(0);
-    for (let c = 0; c < COLS; c++) {
+    const heights = Array(cols).fill(0);
+    for (let c = 0; c < cols; c++) {
       let inBlock = false, colH = 0;
       for (let r = 0; r < ROWS + HIDDEN; r++) {
         const v = b[r][c];
@@ -754,9 +782,9 @@ function findPCSequence(board, pieces, timeLimitMs = 120) {
       // 5: 孤立セル（幅1の列の深さ）チェック
       // 幅1の溝が3マス以上深ければほぼ埋められない
       let hasDeepShaft = false;
-      for (let c = 0; c < COLS; c++) {
+      for (let c = 0; c < cols; c++) {
         const lh = c > 0 ? info.heights[c-1] : 99;
-        const rh = c < COLS-1 ? info.heights[c+1] : 99;
+        const rh = c < cols-1 ? info.heights[c+1] : 99;
         const shaft = Math.min(lh, rh) - info.heights[c];
         if (shaft >= 4) { hasDeepShaft = true; break; }
       }
@@ -777,6 +805,7 @@ function findPCSequence(board, pieces, timeLimitMs = 120) {
 // 盤面がPCに向いているかを評価する追加スコア
 function evaluatePC4Fitness(board, heights) {
   let score = 0;
+  const cols = board[0].length;
   const maxH = Math.max(...heights);
   const minH = Math.min(...heights);
 
@@ -792,7 +821,7 @@ function evaluatePC4Fitness(board, heights) {
 
   // 穴がゼロなら大ボーナス
   let holes = 0;
-  for (let c = 0; c < COLS; c++) {
+  for (let c = 0; c < cols; c++) {
     let hasBlock = false;
     for (let r = 0; r < ROWS + HIDDEN; r++) {
       if (board[r][c]) hasBlock = true;
@@ -810,14 +839,15 @@ function evaluatePC4Fitness(board, heights) {
 
 
 function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level, botLevel, ren, pcBonus=0) {
+  const cols = board[0].length;
   // ── Garbage detection ──────────────────────────────────────────
   // Count garbage rows and compute max stack height
   let garbageRowCount = 0;
   for (let r = 0; r < ROWS+HIDDEN; r++) {
     if (board[r].some(c => c === 'G')) garbageRowCount++;
   }
-  const heights = Array(COLS).fill(0);
-  for (let c = 0; c < COLS; c++) {
+  const heights = Array(cols).fill(0);
+  for (let c = 0; c < cols; c++) {
     for (let r = 0; r < ROWS+HIDDEN; r++) {
       if (board[r][c]) { heights[c] = ROWS+HIDDEN - r; break; }
     }
@@ -828,8 +858,11 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
   const garbagePriority = garbageRowCount >= 4 || (garbageRowCount >= 2 && maxHeight >= 12);
 
   // depth=2 max — depth=3 would be 43000+ calls and hang the server
-  const depth = botLevel >= 2 ? 2 : 1;
-  // Beam width: limits candidates per ply so depth=2 stays fast
+  // 4wide mode has fewer placements, so we can afford more depth for better REN planning
+  let depth = botLevel >= 2 ? 2 : 1;
+  if (cols <= 4 && botLevel >= 3) depth = 3;
+  
+  // Beam width: limits candidates per ply so depth stays fast
   const beamWidth = botLevel >= 5 ? 12 : botLevel >= 4 ? 8 : botLevel >= 3 ? 5 : 3;
 
   function evalDeep(b, pieces, d, isB2B, cmb, r) {
@@ -868,7 +901,8 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
     // 盤面を低く・フラットに保つことを強く報酬
     if (pcBonus > 0 && p.board) {
       const ph = [];
-      for (let c = 0; c < COLS; c++) {
+      const cols = p.board[0].length;
+      for (let c = 0; c < cols; c++) {
         for (let r = 0; r < ROWS + HIDDEN; r++) {
           if (p.board[r][c]) { ph.push(ROWS + HIDDEN - r); break; }
           if (r === ROWS + HIDDEN - 1) ph.push(0);
@@ -942,7 +976,10 @@ class BotPlayer {
   constructor(id, name, level, roomId, bag) {
     this.id = id; this.name = name; this.level = level; this.roomId = roomId;
     this.isBot = true; this.botLevel = level;
-    this.board = emptyBoard();
+    // Determine column count from the room if possible, otherwise default to 10
+    const room = rooms[roomId];
+    this.cols = (room && room.roomSettings && room.roomSettings.fourWideMode) ? COLS_4WIDE : COLS;
+    this.board = Array.from({length:ROWS+HIDDEN},()=>Array(this.cols).fill(0));
     this.bag = bag;
     this.nextQueue = [];
     for (let i = 0; i < 6; i++) this.nextQueue.push(this.bag.next());
@@ -967,9 +1004,10 @@ class BotPlayer {
   spawnPiece() {
     const type = this.nextQueue.shift();
     this.nextQueue.push(this.bag.next());
-    this.currentPiece = { type, rotation: 0, x: 3, y: -2 };
+    const spawnX = Math.floor((this.cols - 4) / 2);
+    this.currentPiece = { type, rotation: 0, x: spawnX, y: -2 };
     this.holdUsed = false;
-    if (!isValid(this.board, type, 0, 3, -1)) this.alive = false;
+    if (!isValid(this.board, type, 0, spawnX, -1)) this.alive = false;
   }
 
   // 盤面の実効高さを返す
@@ -1035,7 +1073,8 @@ class BotPlayer {
 
     // ── PC HUNT MODE ─────────────────────────────────────────────
     // 連続失敗が多すぎる場合は一時的に通常AIに切り替え（閾値を12に緩和）
-    const pcActive = this.pcHuntMode && this.pcFailed < 12;
+    // 4wideモードではPC狙いは無効化する
+    const pcActive = this.pcHuntMode && this.pcFailed < 12 && this.cols >= 10;
 
     if (pcActive) {
       // ── キャッシュされたPC手順を消化する ──────────────────────
@@ -1106,8 +1145,20 @@ class BotPlayer {
       pcBonus
     );
 
-    if (placement) this.executePlacement(placement, onDone);
-    else if (onDone) onDone();
+    if (placement) {
+      this.executePlacement(placement, onDone);
+    } else {
+      // ── GAME OVER (Block Out) ──────────────────────────────────
+      // AI could not find any valid reachable placement
+      console.log(`[BOT] No placement found for ${this.name}. Triggering game over.`);
+      this.alive = false;
+      const room = rooms[this.roomId];
+      if (room) {
+        io.to(this.roomId).emit('player_dead', { id: this.id, name: this.name });
+        checkGameEnd(this.roomId);
+      }
+      if (onDone) onDone();
+    }
   }
 
   executePlacement(placement, onDone) {
@@ -1118,7 +1169,8 @@ class BotPlayer {
       if (this.holdPiece) {
         const prev = this.holdPiece;
         this.holdPiece = this.currentPiece.type;
-        this.currentPiece = { type: prev, rotation: 0, x: 3, y: 0 };
+        const _hspX = Math.floor((this.cols - 4) / 2);
+        this.currentPiece = { type: prev, rotation: 0, x: _hspX, y: 0 };
         this.holdUsed = true;
         // Broadcast hold action then continue with new current piece
         // The placement already has the right rot/x for the held piece
@@ -1177,7 +1229,7 @@ class BotPlayer {
       });
     };
 
-    broadcast(0, 3, 0);
+    broadcast(0, Math.floor((this.cols - 4) / 2), 0);
     const tick = () => {
       if (!rooms[this.roomId]) { done(); return; }
       if (!path || si >= path.length) { done(); return; }
@@ -1192,7 +1244,7 @@ class BotPlayer {
   _buildDirectPath(type, rot, x, targetY) {
     const board = this.board;
     const steps = [];
-    let cr = 0, cx = 3;
+    let cr = 0, cx = Math.floor((this.cols - 4) / 2);
 
     // Rotate
     const rotSteps = rot <= 2 ? rot : 4 - rot;
@@ -1222,8 +1274,9 @@ class BotPlayer {
     const targetKey = `${targetRot},${targetX},${targetY}`;
 
     const visited = new Map();
-    const queue = [{ rot: 0, x: 3, y: 0 }];
-    visited.set('0,3,0', null);
+    const _fspX = Math.floor((this.cols - 4) / 2);
+    const queue = [{ rot: 0, x: _fspX, y: 0 }];
+    visited.set(`0,${_fspX},0`, null);
 
     let qi = 0, found = false;
     outer: while (qi < queue.length) {
@@ -1283,10 +1336,6 @@ class BotPlayer {
     // 長期間PCできなければ失敗カウントを増やす（thinkで判定）
     // pcHuntModeは常時オン（continual PC cycle）
 
-    const now = Date.now();
-    const armed = this.garbageQueue.filter(g => g.readyAt <= now);
-    this.garbageQueue = this.garbageQueue.filter(g => g.readyAt > now);
-
     let b = placePiece(this.board, type, rot, x, y);
     const { board: cleared, lines } = clearLines(b);
     const spin = detectSpin(this.board, type, rot, x, y, false); // BOT placement: kick tracking simplified
@@ -1319,23 +1368,15 @@ class BotPlayer {
     }
     this.b2b = lines === 4 || (isAnySpin && lines > 0);
 
-    // Cancel garbage with cleared lines; remaining goes on board
-    let cancelLines = lines;
-    for (const g of armed) { const sub=Math.min(g.lines,cancelLines); g.lines-=sub; cancelLines-=sub; }
-    let finalBoard = cleared;
-    for (const g of armed.filter(g=>g.lines>0)) {
-      const hc = g.holeCol!==undefined ? g.holeCol : Math.floor(Math.random()*COLS);
-      for (let i=0;i<g.lines;i++){const row=Array(COLS).fill('G');row[hc]=0;finalBoard.push(row);finalBoard.shift();}
-    }
-
-    this.board = finalBoard;
+    this.board = cleared;
     this.lines += lines;
     this.lvl = Math.floor(this.lines/10)+1;
     this.score += lines*100*this.lvl + (isTSpin?lines*200:0);
 
+    // ── Perfect Clear detection ──────────────────────────────────
     const allClear = this.board.every(r=>r.every(c=>c===0));
     if (allClear) {
-      attack = 10;
+      attack += 10;
       this.pcCycle++;      // PCサイクル達成！
       this.pcFailed = 0;   // 失敗カウントリセット
       this.pcHuntMode = true; // 次のPCサイクルへ
@@ -1343,11 +1384,43 @@ class BotPlayer {
       console.log(`[BOT] Perfect Clear #${this.pcCycle}!`);
     }
 
+    // ── Garbage cancellation logic ──────────────────────────────────
+    // 相殺: Pendingのゴミ（queue全体）を対象にする
+    let cancelPower = attack;
+    // 到着が近い順（readyAtが小さい順）に相殺
+    this.garbageQueue.sort((a,b)=>a.readyAt - b.readyAt);
+    for (let i=0; i < this.garbageQueue.length && cancelPower > 0; i++) {
+      const canCancel = Math.min(this.garbageQueue[i].lines, cancelPower);
+      this.garbageQueue[i].lines -= canCancel;
+      cancelPower -= canCancel;
+    }
+    this.garbageQueue = this.garbageQueue.filter(g => g.lines > 0);
+    // 送信される攻撃は相殺後の残り
+    attack = cancelPower;
+
+    // すぐにせり上がるゴミ（armed）を判定
+    const now = Date.now();
+    const armed = this.garbageQueue.filter(g => g.readyAt <= now);
+    this.garbageQueue = this.garbageQueue.filter(g => g.readyAt > now);
+
+    // Remaining garbage after cancellation goes to board
+    const remaining = armed.filter(g => g.lines > 0);
+    // コンボ中（ren>=1）はゴミを適用しない
+    if (remaining.length > 0 && this.ren < 1) {
+      for (const g of remaining) {
+        const hc = g.holeCol!==undefined ? g.holeCol : Math.floor(Math.random()*this.cols);
+        for (let i=0;i<g.lines;i++){const row=Array(this.cols).fill('G');row[hc]=0;this.board.push(row);this.board.shift();}
+      }
+    } else if (remaining.length > 0) {
+      // コンボ中は相殺されなかったゴミをキューに戻す
+      for (const g of remaining) this.garbageQueue.unshift(g);
+    }
+
     const room = rooms[this.roomId];
     if (room && attack > 0) {
       const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
       for (const t of humanTargets) {
-        const hc = Math.floor(Math.random()*COLS);
+        const hc = Math.floor(Math.random()*this.cols);
         io.to(t.id).emit('receive_garbage', { lines: attack, fromId: this.id, holeCol: hc });
         io.to(this.roomId).emit('attack_sent', { fromId: this.id, toId: t.id, attack, clearRows: [] });
       }
@@ -1377,7 +1450,7 @@ class BotPlayer {
   }
 
   queueGarbage(lines, fromId) {
-    const hc = Math.floor(Math.random()*COLS);
+    const hc = Math.floor(Math.random()*this.cols);
     this.garbageQueue.push({ lines, fromId, readyAt: Date.now()+3000, holeCol: hc });
   }
 
@@ -1410,7 +1483,8 @@ function createRoom(roomId) {
       recordTraining: false,  // ホストが設置データ記録を有効化できる
       soloMode: false,         // 1人でもゲーム開始できる
       fortyLineMode: false,    // 40ラインモード
-      blitzMode: false         // 2分間スコアアタックモード
+      blitzMode: false,        // 2分間スコアアタックモード
+      fourWideMode: false      // 4Wideモード（ボード幅4列）
     }
   };
 }
@@ -1573,6 +1647,7 @@ io.on('connection', (socket) => {
     if (ns.allspinMode!==undefined) rs.allspinMode=!!ns.allspinMode;
     if (ns.fortyLineMode!==undefined) rs.fortyLineMode=!!ns.fortyLineMode;
     if (ns.blitzMode!==undefined) rs.blitzMode=!!ns.blitzMode;
+    if (ns.fourWideMode!==undefined) rs.fourWideMode=!!ns.fourWideMode;
     broadcastRoomUpdate(room,socket.roomId);
   });
 
@@ -1581,9 +1656,9 @@ io.on('connection', (socket) => {
     if (!room||socket.id!==room.host) return;
     const rs = room.roomSettings;
     // ソロモード: 1人でも開始可能 (AllSpinモードも同様)
-    const minPlayers = (rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.blitzMode) ? 1 : 2;
+    const minPlayers = (rs.soloMode || rs.allspinMode || rs.fortyLineMode || rs.blitzMode || rs.fourWideMode) ? 1 : 2;
     if (allPlayers(room).length < minPlayers) {
-      socket.emit('error',{msg: (rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
+      socket.emit('error',{msg: (rs.soloMode||rs.allspinMode||rs.fortyLineMode||rs.blitzMode||rs.fourWideMode) ? 'Need at least 1 player' : 'Need at least 2 players (add a BOT!)'}); return;
     }
     room.started=true;
     room.bagSeed=Math.floor(Math.random()*1000000);
@@ -1591,7 +1666,7 @@ io.on('connection', (socket) => {
     room.players.forEach(p=>{p.board=null;p.score=0;p.lines=0;p.level=1;p.alive=true;p.combo=0;p.b2b=false;});
 
     const humanCount=room.players.length;
-    const isSolo = (humanCount === 1 && room.bots.length === 0 && !rs.allspinMode && !rs.fortyLineMode && !rs.blitzMode) || !!(rs.soloMode);
+    const isSolo = (humanCount === 1 && room.bots.length === 0 && !rs.allspinMode && !rs.fortyLineMode && !rs.blitzMode && !rs.fourWideMode) || !!(rs.soloMode);
     const doShogi=room.roomSettings.shogiMode&&humanCount===1&&room.bots.length>=1;
     room.shogiMode=doShogi;
     room.isSolo=isSolo;
@@ -1599,6 +1674,7 @@ io.on('connection', (socket) => {
     room.fortyLineStartTime = rs.fortyLineMode ? Date.now() : null;
     room.blitzMode=!!(rs.blitzMode);
     room.blitzStartTime = rs.blitzMode ? Date.now() : null;
+    room.fourWideMode=!!(rs.fourWideMode);
     // Blitz: 120秒タイマー
     if (rs.blitzMode) {
       if (room._blitzTimer) clearTimeout(room._blitzTimer);
@@ -1644,7 +1720,8 @@ io.on('connection', (socket) => {
       roomSettings:room.roomSettings,shogiMode:doShogi,isSolo,
       allspinMode:!!(room.roomSettings&&room.roomSettings.allspinMode),
       fortyLineMode:!!(room.roomSettings&&room.roomSettings.fortyLineMode),
-      blitzMode:!!(room.roomSettings&&room.roomSettings.blitzMode)
+      blitzMode:!!(room.roomSettings&&room.roomSettings.blitzMode),
+      fourWideMode:!!(room.roomSettings&&room.roomSettings.fourWideMode)
     });
 
     // 学習データ記録: AIモードが有効 かつ ホストがrecordTrainingをオンにしている場合
