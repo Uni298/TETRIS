@@ -995,6 +995,17 @@ class BotPlayer {
     this.pcCycle = 0;            // 何回目のPCサイクルか
     this.pcFailed = 0;           // 連続失敗回数（多すぎたら一時停止）
     this.lastPlacements = [];
+    
+    // Stats tracking
+    this.startTime = Date.now();
+    this.pieceCount = 0;
+    this.totalAttackSent = 0;
+    this.totalGarbageCleared = 0;
+    this.pps = 0;
+    this.apm = 0;
+    this.vs = 0;
+    this.b2bCount = 0;
+
     this.spawnPiece();
   }
 
@@ -1002,6 +1013,14 @@ class BotPlayer {
   get moveStepDelay() { return [0, 120, 80, 45, 20, 8][this.level] || 40; }
 
   spawnPiece() {
+    this.pieceCount++;
+    const now = Date.now();
+    const elapsedSec = (now - this.startTime) / 1000;
+    if (elapsedSec > 1) {
+      this.pps = this.pieceCount / elapsedSec;
+      this.apm = (this.totalAttackSent / elapsedSec) * 60;
+      this.vs = ((this.totalAttackSent + this.totalGarbageCleared) / elapsedSec) * 60;
+    }
     const type = this.nextQueue.shift();
     this.nextQueue.push(this.bag.next());
     const spawnX = Math.floor((this.cols - 4) / 2);
@@ -1337,12 +1356,24 @@ class BotPlayer {
     // pcHuntModeは常時オン（continual PC cycle）
 
     let b = placePiece(this.board, type, rot, x, y);
+    
+    // Track garbage cleared for VS score
+    let garbageCountInClear = 0;
+    for (let r = 0; r < b.length; r++) {
+      if (b[r].every(c => c !== 0)) {
+        if (b[r].some(c => c === 'G')) garbageCountInClear++;
+      }
+    }
+    this.totalGarbageCleared += garbageCountInClear;
+
     const { board: cleared, lines } = clearLines(b);
     const spin = detectSpin(this.board, type, rot, x, y, false); // BOT placement: kick tracking simplified
     const isTSpin = spin === 'TSPIN';
     const isMini = spin === 'MINI_TSPIN';
     const isAnySpin = !!spin && spin !== 'MINI_TSPIN';
-    const isB2B = this.b2b && (lines === 4 || (isAnySpin && lines > 0));
+    const isB2Bable = lines === 4 || (!!spin && lines > 0);
+    const wasB2B = this.b2b;
+    const isB2B = wasB2B && isB2Bable;
 
     let attack = 0;
     if (lines === 4) attack = 4;
@@ -1350,23 +1381,43 @@ class BotPlayer {
     else if (isTSpin && lines === 2) attack = 4;
     else if (isTSpin && lines === 1) attack = 2;
     else if (isMini && lines === 2) attack = 1;
-    else if (isAnySpin && lines >= 1) attack = lines; // S/Z/L/J/I spin: lines attack
+    else if (isMini && lines === 1) attack = 0;
+    else if (isAnySpin && lines >= 1) attack = lines; // S/Z/L/J/I spin
     else if (lines === 3) attack = 2;
     else if (lines === 2) attack = 1;
     else if (lines === 1) attack = 0;
-    if (isB2B && attack > 0) attack += 1;
+
+    // B2B Chain Scaling (TETR.IO like)
+    if (isB2B && attack > 0) {
+      let b2bBonus = 1;
+      if (this.b2bCount >= 24) b2bBonus = 4;
+      else if (this.b2bCount >= 8) b2bBonus = 3;
+      else if (this.b2bCount >= 3) b2bBonus = 2;
+      attack += b2bBonus;
+    }
 
     if (lines > 0) {
       this.combo++;
       this.ren++;
-      const renAttack = [0,0,1,1,2,2,3,3,4,4,4,5][Math.min(this.ren, 11)] || 5;
-      if (this.ren >= 2) attack += renAttack;
-      if (this.combo > 0) attack += Math.floor(this.combo / 2);
+      const renAttackTable = [0,0,1,1,2,2,3,3,4,4,4,5];
+      const renAtk = renAttackTable[Math.min(this.ren, renAttackTable.length - 1)] || 5;
+      if (this.ren >= 2) attack += renAtk;
     } else {
       this.combo = -1;
       this.ren = 0;
     }
-    this.b2b = lines === 4 || (isAnySpin && lines > 0);
+
+    // Update B2B state
+    if (lines > 0) {
+      if (isB2Bable) {
+        if (this.b2b) this.b2bCount++;
+        else this.b2bCount = 1;
+        this.b2b = true;
+      } else {
+        this.b2b = false;
+        this.b2bCount = 0;
+      }
+    }
 
     this.board = cleared;
     this.lines += lines;
@@ -1407,9 +1458,25 @@ class BotPlayer {
     const remaining = armed.filter(g => g.lines > 0);
     // コンボ中（ren>=1）はゴミを適用しない
     if (remaining.length > 0 && this.ren < 1) {
+      let linesToAdd = 0;
+      const CAP = 8;
+      
       for (const g of remaining) {
-        const hc = g.holeCol!==undefined ? g.holeCol : Math.floor(Math.random()*this.cols);
-        for (let i=0;i<g.lines;i++){const row=Array(this.cols).fill('G');row[hc]=0;this.board.push(row);this.board.shift();}
+        if (linesToAdd >= CAP) {
+          this.garbageQueue.unshift({...g, readyAt: now + 500});
+          continue;
+        }
+        let hc = g.holeCol!==undefined ? g.holeCol : Math.floor(Math.random()*this.cols);
+        for (let i=0;i<g.lines;i++){
+          if (linesToAdd >= CAP) {
+            this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: hc});
+            break;
+          }
+          // Messiness: 10%の確率で穴の位置が変わる
+          if (Math.random() < 0.1) hc = Math.floor(Math.random() * this.cols);
+          const row=Array(this.cols).fill('G');row[hc]=0;this.board.push(row);this.board.shift();
+          linesToAdd++;
+        }
       }
     } else if (remaining.length > 0) {
       // コンボ中は相殺されなかったゴミをキューに戻す
@@ -1418,6 +1485,7 @@ class BotPlayer {
 
     const room = rooms[this.roomId];
     if (room && attack > 0) {
+      this.totalAttackSent += attack;
       const humanTargets = room.players.filter(p => p.id !== this.id && p.alive);
       for (const t of humanTargets) {
         const hc = Math.floor(Math.random()*this.cols);
@@ -1436,7 +1504,10 @@ class BotPlayer {
         score: this.score, lines: this.lines, level: this.lvl,
         nextPieces: this.nextQueue.slice(0,5),
         holdPiece: this.holdPiece,
-        garbageLines
+        garbageLines,
+        pps: this.pps,
+        apm: this.apm,
+        garbageQueue: this.garbageQueue
       });
     }
 
@@ -1753,14 +1824,14 @@ io.on('connection', (socket) => {
     socket.to(socket.roomId).emit('opponent_piece_update',{id:socket.id,currentPiece});
   });
 
-  socket.on('board_update', ({board,score,lines,level,currentPiece,nextPieces,holdPiece}) => {
+  socket.on('board_update', ({board,score,lines,level,currentPiece,nextPieces,holdPiece,pps,apm,vs,garbageQueue}) => {
     const room=getRoom(socket.roomId); if (!room) return;
     const player=room.players.find(p=>p.id===socket.id); if (!player) return;
     player.board=board; player.score=score; player.lines=lines; player.level=level;
     player.currentPiece=currentPiece; player.nextPieces=nextPieces; player.holdPiece=holdPiece;
-    const player2=room.players.find(p=>p.id===socket.id);
-    const garbageLines=player2&&player2.garbageQueue?player2.garbageQueue.reduce((s,g)=>s+g.lines,0):0;
-    socket.to(socket.roomId).emit('opponent_update',{id:socket.id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines});
+    player.pps=pps; player.apm=apm; player.vs=vs; player.garbageQueue=garbageQueue;
+    const garbageLines=garbageQueue?garbageQueue.reduce((s,g)=>s+g.lines,0):0;
+    socket.to(socket.roomId).emit('opponent_update',{id:socket.id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue});
   });
 
   // ── Training data: piece placement event ──────────────────────

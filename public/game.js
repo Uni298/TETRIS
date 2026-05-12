@@ -988,6 +988,16 @@ class TetrisGame{
     this.garbageQueue=[];
     this.gravityMs=0;
     renSemitone=0;
+
+    // Stats tracking
+    this.startTime = performance.now();
+    this.pieceCount = 0;
+    this.totalAttackSent = 0;
+    this.totalGarbageCleared = 0;
+    this.pps = 0;
+    this.apm = 0;
+    this.vs = 0;
+
     this.spawnPiece();
   }
 
@@ -999,6 +1009,8 @@ class TetrisGame{
   }
 
   spawnPiece(){
+    this.pieceCount++;
+    this._updateStats();
     const entry=this.nextQueue.shift();
     this.nextQueue.push(this._makeNextEntry(this.bag.next()));
     const {type, customShape}=entry;
@@ -1009,6 +1021,17 @@ class TetrisGame{
     // すぐには終わらず、一度設置させてから判定する
     if(!this.isValid(this.current)){
       this._pendingGameOver=true;
+    }
+  }
+
+  _updateStats(){
+    const now = performance.now();
+    const elapsedSec = (now - this.startTime) / 1000;
+    if (elapsedSec > 1.0) { // Calculate after 1 second to avoid initial spikes
+      this.pps = this.pieceCount / elapsedSec;
+      this.apm = (this.totalAttackSent / elapsedSec) * 60;
+      // TETR.IO VS Score = (Attack + Garbage Cleared) / Time(s) * 60
+      this.vs = ((this.totalAttackSent + this.totalGarbageCleared) / elapsedSec) * 60;
     }
   }
 
@@ -1215,10 +1238,15 @@ class TetrisGame{
 
   clearLines(){
     const cleared=[];
+    let garbageCountInClear = 0;
     for(let r=ROWS+HIDDEN-1;r>=0;r--){
-      if(this.board[r].every(c=>c!==0))cleared.push(r);
+      if(this.board[r].every(c=>c!==0)){
+        cleared.push(r);
+        if(this.board[r].some(c=>c==='G')) garbageCountInClear++;
+      }
     }
     const count=cleared.length;
+    this.totalGarbageCleared += garbageCountInClear;
     this._lastLinesCleared=count; // for training data
     const is180Spin=this.lastSpin==='180';
     // 180°スピンはライン消去があった場合のみスピン扱い（確定はcount>0後に上書き）
@@ -1245,27 +1273,35 @@ class TetrisGame{
       this.combo++;this.ren++;
       if(this.ren>1)SFX.ren(this.ren);
 
-      // ── Attack Calculation ──────────────────────────────────────
+      // ── Attack Calculation (TETR.IO Standard) ───────────────────
       const isPenta=count===5;
-      const isB2B=this.b2b&&(count===4||isPenta||(isSpin&&!isMini));
+      const isB2Bable = count===4 || isPenta || (isSpin);
+      const wasB2B = this.b2b;
+      const isB2B = wasB2B && isB2Bable;
       
       let attack=0;
       if(isPenta){
-        attack=6;
-        if(isB2B)attack+=1;
-        if(this.combo>0)attack+=Math.floor(this.combo/2);
+        attack=6; // Penta
       }
       else{
-        if(isTSpin&&!isMini)attack={1:2,2:4,3:6}[count]||0;
-        else if(isMini)attack={1:0,2:1}[count]||0;
+        if(isTSpin && !isMini) attack={1:2,2:4,3:6}[count]||0;
+        else if(isMini) attack={1:0,2:1}[count]||0; // TSM-S:0, TSM-D:1 (TETR.IO)
         else attack={1:0,2:1,3:2,4:4}[count]||0;
-        if(isB2B&&attack>0)attack+=1;
-        if(this.combo>0)attack+=Math.floor(this.combo/2);
-        // REN攻撃テーブル
-        const renAttackTable=[0,0,1,1,2,2,3,3,4,4,4,5];
-        const renAtk=renAttackTable[Math.min(this.ren,11)]||5;
-        if(this.ren>=2)attack+=renAtk;
       }
+
+      // B2B Chain Scaling (TETR.IO like)
+      if(isB2B && attack > 0) {
+        let b2bBonus = 1;
+        if (this.b2bCount >= 24) b2bBonus = 4;
+        else if (this.b2bCount >= 8) b2bBonus = 3;
+        else if (this.b2bCount >= 3) b2bBonus = 2;
+        attack += b2bBonus;
+      }
+
+      // Combo Table (TETR.IO: 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 4, 5...)
+      const renAttackTable=[0,0,1,1,2,2,3,3,4,4,4,5];
+      const renAtk=renAttackTable[Math.min(this.ren, renAttackTable.length-1)]||5;
+      if(this.ren>=2) attack += renAtk;
 
       // Perfect Clear bonus (Additive)
       if(allClear){
@@ -1295,40 +1331,60 @@ class TetrisGame{
       // コンボ中（ren>=1）はゴミを適用しない
       if(remaining.length>0&&this.ren<1){
         const groups=groupByBatch(remaining);
+        
+        // TETR.IO Garbage Cap: 1手で最大8ラインまでしかせり上がらない
+        let linesToAdd = 0;
+        const CAP = 8;
+        
         for(const grp of groups){
-          const holeCol=grp[0].holeCol!==undefined?grp[0].holeCol:Math.floor(Math.random()*getGameCols());
+          if (linesToAdd >= CAP) break;
+          let holeCol=grp[0].holeCol!==undefined?grp[0].holeCol:Math.floor(Math.random()*getGameCols());
           for(const chunk of grp){
-            const col=chunk.holeCol!==undefined?chunk.holeCol:holeCol;
-            for(let i=0;i<chunk.lines;i++){const row=Array(getGameCols()).fill('G');row[col]=0;this.board.push(row);this.board.shift();if(this.current)this.current.y=Math.max(0,this.current.y-1);}
+            if (linesToAdd >= CAP) {
+              // Capを超えた分はキューに戻す (少し遅延させる)
+              this.garbageQueue.unshift({...chunk, readyAt: now + 500});
+              continue;
+            }
+            for(let i=0;i<chunk.lines;i++){
+              if (linesToAdd >= CAP) {
+                this.garbageQueue.unshift({lines: chunk.lines - i, fromId: chunk.fromId, readyAt: now + 500, holeCol: holeCol});
+                break;
+              }
+              // Messiness: 10%の確率で穴の位置が変わる
+              if(Math.random()<0.1) holeCol=Math.floor(Math.random()*getGameCols());
+              const row=Array(getGameCols()).fill('G');row[holeCol]=0;this.board.push(row);this.board.shift();
+              linesToAdd++;
+              if(this.current)this.current.y=Math.max(0,this.current.y-1);
+            }
           }
         }
-        SFX.garbage();renderer&&renderer.onGarbageApplied(remaining.reduce((a,b)=>a+b.lines,0));
+        SFX.garbage();renderer&&renderer.onGarbageApplied(linesToAdd);
       } else if(remaining.length>0){
         // コンボ中は相殺されなかったゴミをキューに戻す
         for(const g of remaining)this.garbageQueue.unshift(g);
       }
 
-      // Update B2B state after calculation
-      const wasB2B=this.b2b;
+      // Update B2B state
       const prevB2bCount=this.b2bCount;
-      if(count===4||isPenta||(isSpin&&!isMini)){if(this.b2b){this.b2bCount++;SFX.b2b();}this.b2b=true;}
+      if(isB2Bable){
+        if(this.b2b){this.b2bCount++;}
+        else {this.b2bCount=1;}
+        this.b2b=true;
+        if(this.b2bCount>1) SFX.b2b();
+      }
       else{
-        if(wasB2B&&prevB2bCount>=2){
-          const bonusAtk=Math.floor(prevB2bCount/2);
-          if(bonusAtk>0){
-            socket.emit('lines_cleared',{attack:bonusAtk,allClear:false,spinType:'B2B_BREAK',clearRows:[]});
-            renderer&&renderer.onB2bBreakAttack(bonusAtk,prevB2bCount);
-          }
-        }
         this.b2bCount=0;this.b2b=false;
       }
 
       const pts=this.calcScore(count,isTSpin,isMini,isB2B,this.combo);
       this.score+=pts;this.lines+=count;this.level=Math.floor(this.lines/10)+1;
 
-      if(attack>0||fortyLineMode)socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines});
+      if(attack>0||fortyLineMode){
+        this.totalAttackSent += attack;
+        socket.emit('lines_cleared',{attack,allClear,spinType,clearRows:cleared,totalLines:this.lines});
+      }
       // 相手に視覚エフェクトを送信
-      const lcEv={count,spinType,isB2B:isB2B||false,ren:this.ren,allClear};
+      const lcEv={count,spinType,isB2B:isB2B||false,b2bCount:this.b2bCount,ren:this.ren,allClear};
       socket.emit('line_clear_effect',lcEv);
       ReplayRecorder.record('line_clear_effect',lcEv);
 
@@ -1340,7 +1396,7 @@ class TetrisGame{
       if(isSpin&&isTSpin)SFX.tspin();
       if(allClear)SFX.allClear();
 
-      renderer&&renderer.onLineClear(cleared,count,spinType,isB2B,this.combo,this.ren,allClear,attack);
+      renderer&&renderer.onLineClear(cleared,count,spinType,isB2B,this.combo,this.ren,allClear,attack,this.b2bCount);
     } else {
       if(this.ren>0){SFX.renReset();}
       this.combo=-1;this.ren=0;
@@ -1348,16 +1404,11 @@ class TetrisGame{
       // 相手にRENリセットを通知
       socket.emit('line_clear_effect',{count:0,spinType:null,isB2B:false,ren:0,allClear:false});
       // ガベージ即時適用（ラインなし時）
-      // コンボ中（combo>=1）はゴミを盤面に反映しない
       const now=performance.now();
       const armed=this.garbageQueue.filter(g=>g.readyAt<=now);
       this.garbageQueue=this.garbageQueue.filter(g=>g.readyAt>now);
       if(armed.length&&this.combo<1){
-        const total=armed.reduce((a,b)=>a+b.lines,0);
-        if(total>0){
-          // 同じ穴のものをセットで0.1秒ごとにアニメーション付きで追加
-          this._applyGarbageAnimated(armed,total);
-        }
+        this._applyGarbageCap(armed, 8);
       }
     }
 
@@ -1390,6 +1441,31 @@ class TetrisGame{
       this.alive=false;this._pendingGameOver=false;
       socket.emit('game_over');renderer&&renderer.onGameOver();
     }
+  }
+
+  _applyGarbageCap(armed, cap){
+    let linesToAdd = 0;
+    const now = performance.now();
+    const remainingToBoard = [];
+    const backToQueue = [];
+    
+    for (const g of armed) {
+      if (linesToAdd >= cap) {
+        backToQueue.push({...g, readyAt: now + 500});
+      } else {
+        const canAdd = Math.min(g.lines, cap - linesToAdd);
+        if (canAdd > 0) remainingToBoard.push({...g, lines: canAdd});
+        if (canAdd < g.lines) {
+          backToQueue.push({lines: g.lines - canAdd, fromId: g.fromId, readyAt: now + 500, holeCol: g.holeCol});
+        }
+        linesToAdd += canAdd;
+      }
+    }
+    
+    if (linesToAdd > 0) {
+      this._applyGarbageAnimated(remainingToBoard, linesToAdd);
+    }
+    for (const g of backToQueue) this.garbageQueue.unshift(g);
   }
 
   // おじゃまミノ: 同じ穴のものをセットで、0.1秒ごとにグループを追加 + 振動
@@ -1431,6 +1507,11 @@ class TetrisGame{
       board:this.board.map(row=>row.map(c=>c||0)),
       score:this.score,lines:this.lines,level:this.level,
       currentPiece:{...this.current},nextPieces:this.nextQueue.slice(0,5),holdPiece:this.holdPiece,
+      // Stats
+      pps: this.pps,
+      apm: this.apm,
+      vs: this.vs,
+      garbageQueue: this.garbageQueue,
       // リプレイ傾き再現用
       tiltAngle: renderer ? (renderer.tiltAngle||0) : 0,
       shakePower: renderer ? (renderer.shakePower||0) : 0,
@@ -3480,6 +3561,11 @@ class GameRenderer{
       const holdGfx=new PIXI.Graphics();holdGfx.x=-30;holdGfx.y=12;cont.addChild(holdGfx);
       const sst=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:9,fill:0x666666});
       const stxt=new PIXI.Text('0000000',sst);stxt.x=0;stxt.y=oBH+4;cont.addChild(stxt);
+
+      const ppsTxt=new PIXI.Text('0.00 PPS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:8,fill:0x00f5ff}));ppsTxt.x=0;ppsTxt.y=oBH+15;cont.addChild(ppsTxt);
+      const apmTxt=new PIXI.Text('0 APM',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:8,fill:0xff8500}));apmTxt.x=0;apmTxt.y=oBH+25;cont.addChild(apmTxt);
+      const vsTxt=new PIXI.Text('0 VS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:8,fill:0xcc44ff}));vsTxt.x=0;vsTxt.y=oBH+35;cont.addChild(vsTxt);
+
       const flashGfx=new PIXI.Graphics();flashGfx.alpha=0;cont.addChild(flashGfx);
       const renGfx=new PIXI.Graphics();renGfx.alpha=0;cont.addChild(renGfx);
       // Lightning effect layer for opponent B2B
@@ -3489,12 +3575,13 @@ class GameRenderer{
       // ゴミゲージ (ボード左側に縦棒)
       const gMeterGfx=new PIXI.Graphics();gMeterGfx.x=-8;gMeterGfx.y=0;cont.addChild(gMeterGfx);
       this.opBoardData[p.id]={
-        cont,boardGfx,scoreTxt:stxt,nextGfx,holdGfx,cell:oCell,origX:RX,origY:by,
+        cont,boardGfx,scoreTxt:stxt,ppsTxt,apmTxt,nextGfx,holdGfx,cell:oCell,origX:RX,origY:by,
         board:null,currentPiece:null,nextPieces:null,holdPiece:null,
         shakeX:0,shakeY:0,tilt:0,tiltTarget:0,dead:false,
         boardW:oBW,boardH:oBH,showAbove,isBot,
         gameOverTick:null,origXcenter:RX+oBW/2,origYcenter:by+oBH/2,
-        score:0,garbageLines:0,gMeterGfx,
+        score:0,pps:0,apm:0,garbageLines:0,gMeterGfx,
+        garbageQueue:[],
         flashGfx,flashAlpha:0,
         renGfx,lightGfx,b2bCount:0,lightTimer:0,
         ren:0,renColor:0x00f5ff,
@@ -3592,8 +3679,22 @@ class GameRenderer{
     this.linesTxt=Object.assign(new PIXI.Text('0',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(14*fsc),fill:0xffbe0b})),{x:0,y:62*fsc});this.uiCont.addChild(this.linesTxt);
     this.uiCont.addChild(lbl('LEVEL',0,90*fsc));
     this.levelTxt=Object.assign(new PIXI.Text('1',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(14*fsc),fill:0xffbe0b})),{x:0,y:104*fsc});this.uiCont.addChild(this.levelTxt);
+    
+    // PPS / APM / VS stats
+    this.uiCont.addChild(lbl('PPS',0,135*fsc));
+    this.ppsTxt=Object.assign(new PIXI.Text('0.00',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(13*fsc),fill:0x00f5ff})),{x:0,y:148*fsc});
+    this.uiCont.addChild(this.ppsTxt);
+    
+    this.uiCont.addChild(lbl('APM',0,175*fsc));
+    this.apmTxt=Object.assign(new PIXI.Text('0.0',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(13*fsc),fill:0xff8500})),{x:0,y:188*fsc});
+    this.uiCont.addChild(this.apmTxt);
+
+    this.uiCont.addChild(lbl('VS',0,215*fsc));
+    this.vsTxt=Object.assign(new PIXI.Text('0.0',new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:Math.round(13*fsc),fill:0xcc44ff})),{x:0,y:228*fsc});
+    this.uiCont.addChild(this.vsTxt);
+
     // NEXT
-    this.nextCont=new PIXI.Container();this.nextCont.x=px;this.nextCont.y=py+145*fsc;this.root.addChild(this.nextCont);
+    this.nextCont=new PIXI.Container();this.nextCont.x=px;this.nextCont.y=py+265*fsc;this.root.addChild(this.nextCont);
     this.nextCont.addChild(lbl('NEXT',0,0));
     this.nextGfx=[];for(let i=0;i<5;i++){const g=new PIXI.Graphics();g.y=18+i*50;this.nextCont.addChild(g);this.nextGfx.push(g);}
     // HOLD
@@ -3677,6 +3778,19 @@ class GameRenderer{
       const dy=(r-HIDDEN)*CELL;
       this.drawCell(g,c*CELL,dy,CELL,v,r<HIDDEN?0.55:1);
     }
+    
+    // Danger Warning: 10ライン以上でおじゃまが迫っている場合
+    const totalLines = (this.gs.garbageQueue || []).reduce((s, g2) => s + g2.lines, 0);
+    if(totalLines >= 10){
+      const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.01);
+      this.boardBorder.clear();
+      this.boardBorder.lineStyle(3, 0xff006e, 0.4 + 0.6 * pulse); // Red flash
+      this.boardBorder.drawRect(-2, 0, BOARD_W+4, BOARD_H+4);
+    } else {
+      this.boardBorder.clear();
+      this.boardBorder.lineStyle(2, 0x00f5ff, 0.8);
+      this.boardBorder.drawRect(-2, 0, BOARD_W+4, BOARD_H+4);
+    }
   }
 
   drawGhost(){
@@ -3747,9 +3861,47 @@ class GameRenderer{
     const d=this.opBoardData[pid];if(!d||d.dead)return;
     const g=d.boardGfx;g.clear();const cell=d.cell;
     const {boardW:oBW,boardH:oBH,showAbove}=d;
+    
+    // Stats update
+    if(d.ppsTxt) d.ppsTxt.text = `${(d.pps||0).toFixed(2)} PPS`;
+    if(d.apmTxt) d.apmTxt.text = `${Math.round(d.apm||0)} APM`;
+    if(d.vsTxt) d.vsTxt.text = `${Math.round(d.vs||0)} VS`;
+
+    // Opponent Garbage Meter & Danger Warning
+    let opTotalLines = 0;
+    if(d.gMeterGfx){
+      d.gMeterGfx.clear();
+      if(d.garbageQueue && d.garbageQueue.length > 0){
+        const now = performance.now();
+        let currentY = oBH;
+        for (const queueItem of d.garbageQueue) {
+          const lines = queueItem.lines;
+          const h = lines * cell;
+          let col = 0xcccccc;
+          const timeLeft = queueItem.readyAt - now;
+          if (timeLeft <= 500) col = 0xff006e;
+          else if (timeLeft <= 1500) col = 0xffbe0b;
+          d.gMeterGfx.beginFill(col, 0.85);
+          d.gMeterGfx.drawRect(0, currentY - h, 3, h); // thin meter for opponents
+          d.gMeterGfx.endFill();
+          currentY -= h;
+          opTotalLines += lines;
+          if (opTotalLines >= 20) break;
+        }
+      }
+    }
+
     if(!d.board){g.beginFill(0x000010,0.5);g.drawRect(0,0,oBW,oBH);g.endFill();}
     else{
       const offset=d.board.length>ROWS?HIDDEN:0;
+      // Border
+      const isBot=!!d.isBot;
+      const borderCol=opTotalLines >= 10 ? 0xff006e : (isBot?0xffbe0b:0x00f5ff);
+      const borderAlpha=opTotalLines >= 10 ? (0.4 + 0.6 * (0.5 + 0.5 * Math.sin(performance.now() * 0.01))) : (isBot?0.45:0.2);
+      g.lineStyle(1.5, borderCol, borderAlpha);
+      g.drawRect(0,0,oBW,oBH);
+      g.lineStyle(0);
+
       for(let r=-showAbove;r<ROWS;r++){
         const row=d.board[r+offset];if(!row)continue;
         for(let c=0;c<getGameCols();c++){
@@ -3954,11 +4106,52 @@ class GameRenderer{
     g.lineStyle(1,col,pulse);g.drawRect(0,y,6,h);g.lineStyle(0);
   }
 
+  drawGarbageMeter(){
+    if(!this.gMeterGfx)return;
+    this.gMeterGfx.clear();
+    const queue = this.gs.garbageQueue || [];
+    if(!queue.length) return;
+    
+    const now = performance.now();
+    let totalLines = 0;
+    const MAX_VISIBLE = 20;
+    
+    // 下から積み上げるように描画
+    let currentY = BOARD_H;
+    for (const g of queue) {
+      const lines = g.lines;
+      const h = lines * CELL;
+      
+      // 色の決定
+      let col = 0xcccccc; // default: gray
+      const timeLeft = g.readyAt - now;
+      if (timeLeft <= 500) col = 0xff006e; // red
+      else if (timeLeft <= 1500) col = 0xffbe0b; // yellow
+      
+      this.gMeterGfx.beginFill(col, 0.85);
+      this.gMeterGfx.drawRect(0, currentY - h, 6, h);
+      this.gMeterGfx.endFill();
+      
+      // 枠線
+      this.gMeterGfx.lineStyle(1, 0xffffff, 0.3);
+      this.gMeterGfx.drawRect(0, currentY - h, 6, h);
+      this.gMeterGfx.lineStyle(0);
+      
+      currentY -= h;
+      totalLines += lines;
+      if (totalLines >= MAX_VISIBLE) break;
+    }
+  }
+
   updateScoreUI(){
     this.scoreTxt.text=this.gs.score.toString().padStart(7,'0');
     this.linesTxt.text=this.gs.lines.toString();
     this.levelTxt.text=this.gs.level.toString();
+    if(this.ppsTxt) this.ppsTxt.text = this.gs.pps.toFixed(2);
+    if(this.apmTxt) this.apmTxt.text = this.gs.apm.toFixed(1);
+    if(this.vsTxt) this.vsTxt.text = this.gs.vs.toFixed(1);
     this.updateVisibleOpponents();
+    this.drawGarbageMeter();
   }
 
   updateB2bBadge(){
@@ -4612,7 +4805,7 @@ class GameRenderer{
     return this.mainBY+(avgRow-HIDDEN)*CELL+CELL/2;
   }
 
-  onLineClear(cleared,count,spinType,isB2B,combo,ren,allClear,attack){
+  onLineClear(cleared,count,spinType,isB2B,combo,ren,allClear,attack,currentB2bCount){
     this.flashGfx.clear();this._flashAlpha=1;
     const isTDouble=spinType==='TSPIN'&&count===2;
     const isTTriple=spinType==='TSPIN'&&count===3;
@@ -4650,7 +4843,7 @@ class GameRenderer{
 
     // B2B 雷エフェクト
     if(isB2B){
-      this._b2bCount=(this._b2bCount||0)+1;
+      this._b2bCount = currentB2bCount || (this._b2bCount||0)+1;
       this._triggerLightning(this._b2bCount);
       this._punchB2bBadge(); // カウント更新エフェクト
     } else {
@@ -4676,8 +4869,11 @@ class GameRenderer{
     }
     if(count===4&&!spinType)lbl='TETRIS';
     if(allClear)lbl='★ ALL CLEAR ★';
-    if(isB2B&&lbl)lbl='B2B '+lbl;
-    if(ren>2)lbl+=(lbl?' │ ':'')+`REN ${ren}`;
+    
+    const b2bStr = (isB2B && this._b2bCount > 1) ? `B2B x${this._b2bCount} ` : (isB2B ? 'B2B ' : '');
+    if(lbl) lbl = b2bStr + lbl;
+
+    if(ren>1)lbl+=(lbl?' │ ':'')+`REN ${ren-1}`;
     if(lbl){
       const col=allClear?0xffff44:isB2B?0xffbe0b:spinChunkColor||0x00f5ff;
       this.floatLabels.push(new FloatLabel(this.app,lx,ly,lbl,col,false));ly+=38;
@@ -5976,13 +6172,20 @@ class SpectatorRenderer{
       const boardGfx=new PIXI.Graphics();cont.addChild(boardGfx);
       const sst=new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.max(7,cell*0.5),fill:0x888888});
       const stxt=new PIXI.Text('0000000',sst);stxt.x=0;stxt.y=bh+4;cont.addChild(stxt);
+
+      const ppsTxt=new PIXI.Text('0.00 PPS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.max(6,cell*0.45),fill:0x00f5ff}));ppsTxt.x=0;ppsTxt.y=bh+cell*1.2;cont.addChild(ppsTxt);
+      const apmTxt=new PIXI.Text('0 APM',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.max(6,cell*0.45),fill:0xff8500}));apmTxt.x=0;apmTxt.y=bh+cell*1.2+10;cont.addChild(apmTxt);
+      const vsTxt=new PIXI.Text('0 VS',new PIXI.TextStyle({fontFamily:'Share Tech Mono',fontSize:Math.max(6,cell*0.45),fill:0xcc44ff}));vsTxt.x=0;vsTxt.y=bh+cell*1.2+20;cont.addChild(vsTxt);
+      const gMeterGfx=new PIXI.Graphics();gMeterGfx.x=-4;gMeterGfx.y=0;cont.addChild(gMeterGfx);
+
       // 死亡オーバーレイ
       const deadOverlay=new PIXI.Graphics();
       deadOverlay.beginFill(0x000000,0.55);deadOverlay.drawRect(0,0,bw,bh);deadOverlay.endFill();
       deadOverlay.visible=false;cont.addChild(deadOverlay);
       const deadTxt=new PIXI.Text('💀',new PIXI.TextStyle({fontSize:cell*1.8}));
       deadTxt.anchor.set(0.5);deadTxt.x=bw/2;deadTxt.y=bh/2;deadTxt.visible=false;cont.addChild(deadTxt);
-      this.opBoardData[p.id]={cont,boardGfx,scoreTxt:stxt,cell,bw,bh,board:null,currentPiece:null,dead:false,deadOverlay,deadTxt,score:0};
+      this.opBoardData[p.id]={cont,boardGfx,scoreTxt:stxt,ppsTxt,apmTxt,vsTxt,gMeterGfx,cell,bw,bh,board:null,currentPiece:null,dead:false,deadOverlay,deadTxt,score:0,pps:0,apm:0,vs:0,garbageQueue:[]};
+
     });
   }
   drawAll(){
@@ -5992,8 +6195,52 @@ class SpectatorRenderer{
     const d=this.opBoardData[pid];if(!d)return;
     const g=d.boardGfx;g.clear();
     const {cell,bh}=d;
+    
+    // Stats update
+    if(d.ppsTxt) d.ppsTxt.text = `${(d.pps||0).toFixed(2)} PPS`;
+    if(d.apmTxt) d.apmTxt.text = `${Math.round(d.apm||0)} APM`;
+    if(d.vsTxt) d.vsTxt.text = `${Math.round(d.vs||0)} VS`;
+
+    // Garbage Meter
+    if(d.gMeterGfx){
+      d.gMeterGfx.clear();
+      if(d.garbageQueue && d.garbageQueue.length > 0){
+        const now = performance.now();
+        let totalLines = 0;
+        let currentY = bh;
+        for (const queueItem of d.garbageQueue) {
+          const lines = queueItem.lines;
+          const h = lines * cell;
+          let col = 0xcccccc;
+          const timeLeft = queueItem.readyAt - now;
+          if (timeLeft <= 500) col = 0xff006e;
+          else if (timeLeft <= 1500) col = 0xffbe0b;
+          d.gMeterGfx.beginFill(col, 0.85);
+          d.gMeterGfx.drawRect(0, currentY - h, 2, h);
+          d.gMeterGfx.endFill();
+          currentY -= h;
+          totalLines += lines;
+          if (totalLines >= 20) break;
+        }
+      }
+    }
+
     const HIDDEN_ROWS=3;
     if(!d.board){g.beginFill(0x000010,0.3);g.drawRect(0,0,d.bw,bh);g.endFill();return;}
+    
+    // Danger Border
+    const totalQ = (d.garbageQueue||[]).reduce((s,g2)=>s+g2.lines,0);
+    const bg = d.cont.children[0];
+    if (bg && bg.clear) {
+      bg.clear();
+      bg.beginFill(0x000010, 0.9); bg.drawRect(0,0,d.bw,bh); bg.endFill();
+      const bCol = totalQ >= 10 ? 0xff006e : (!!d.isBot ? 0xffbe0b : 0x00f5ff);
+      bg.lineStyle(1, bCol, totalQ >= 10 ? 0.9 : 0.5); bg.drawRect(0,0,d.bw,bh);
+      bg.lineStyle(0.3, 0x0a2a4a, 0.6);
+      for(let c=1;c<getGameCols();c++){bg.moveTo(c*cell,0);bg.lineTo(c*cell,bh);}
+      for(let r=1;r<ROWS;r++){bg.moveTo(0,r*cell);bg.lineTo(d.bw,r*cell);}
+    }
+
     for(let r=HIDDEN_ROWS;r<ROWS+HIDDEN_ROWS;r++){
       for(let c=0;c<getGameCols();c++){
         const v=d.board[r]&&d.board[r][c];if(!v)continue;
@@ -6080,8 +6327,8 @@ function startSoftDrop(){stopSoftDrop();if(!gameState||!gameState.alive)return;g
 function stopSoftDrop(){if(softDropTimer){clearInterval(softDropTimer);softDropTimer=null;}}
 
 // ---- Multiplayer ----
-socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines})=>{
-  ReplayRecorder.record('opponent_update',{id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines});
+socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue})=>{
+  ReplayRecorder.record('opponent_update',{id,board,score,lines,level,currentPiece,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue});
   if(!renderer)return;
   const d=renderer.opBoardData[id];if(!d)return;
   d.board=board;
@@ -6090,17 +6337,23 @@ socket.on('opponent_update',({id,board,score,lines,level,currentPiece,nextPieces
   if(holdPiece!==undefined)d.holdPiece=holdPiece;
   if(score!==undefined)d.score=score;
   if(garbageLines!==undefined)d.garbageLines=garbageLines;
+  if(pps!==undefined) d.pps=pps;
+  if(apm!==undefined) d.apm=apm;
+  if(vs!==undefined) d.vs=vs;
+  if(garbageQueue!==undefined) d.garbageQueue=garbageQueue;
+
   if(d.scoreTxt)d.scoreTxt.text=(score||0).toString().padStart(7,'0');
-  renderer.drawOpponentGarbageMeter&&renderer.drawOpponentGarbageMeter(id);
-  if(isSpectator)return; // SpectatorRenderer は ticker で自動更新
+  
+  if(isSpectator)return; 
   const p=renderer.players.find(pl=>pl.id===id);
   if(p){p.score=score;p.lines=lines;p.level=level;}
   renderer.updateVisibleOpponents&&renderer.updateVisibleOpponents();
+  renderer.drawOpponentBoard(id);
 });
 
 // BOT board update (same structure as opponent_update)
-socket.on('bot_update',({id,board,score,lines,level,nextPieces,holdPiece,garbageLines})=>{
-  ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines});
+socket.on('bot_update',({id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue})=>{
+  ReplayRecorder.record('bot_update',{id,board,score,lines,level,nextPieces,holdPiece,garbageLines,pps,apm,vs,garbageQueue});
   if(!renderer)return;
   const d=renderer.opBoardData[id];if(!d)return;
   d.board=board;
@@ -6108,10 +6361,16 @@ socket.on('bot_update',({id,board,score,lines,level,nextPieces,holdPiece,garbage
   if(holdPiece!==undefined)d.holdPiece=holdPiece;
   if(score!==undefined)d.score=score;
   if(garbageLines!==undefined)d.garbageLines=garbageLines;
+  if(pps!==undefined) d.pps=pps;
+  if(apm!==undefined) d.apm=apm;
+  if(vs!==undefined) d.vs=vs;
+  if(garbageQueue!==undefined) d.garbageQueue=garbageQueue;
+
   if(d.scoreTxt)d.scoreTxt.text=(score||0).toString().padStart(7,'0');
-  renderer.drawOpponentGarbageMeter&&renderer.drawOpponentGarbageMeter(id);
+  
   if(isSpectator)return;
   renderer.updateVisibleOpponents&&renderer.updateVisibleOpponents();
+  renderer.drawOpponentBoard(id);
 });
 
 // BOT piece motion update
