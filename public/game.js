@@ -173,6 +173,10 @@ socket.on('connect',()=>{
     // 切断前のルームへ再接続
     if(_lastUsedRoomId&&myName){
       socket.emit('rejoin_room',{roomId:_lastUsedRoomId,name:myName});
+    } else if(myName){
+      showGameLobby(_lastUsedRoomId);
+    } else {
+      document.getElementById('name-modal').classList.remove('hidden');
     }
   }
 });
@@ -587,7 +591,11 @@ socket.on('error',({msg})=>{
 });
 
 socket.on('rejoin_result',({success,roomId:rid,players,host,mutationMode:mu,mutationSeed:ms,roomSettings:rs})=>{
-  if(!success){showScreen('lobby');return;}
+  if(!success){
+    if(myName)showGameLobby(null);
+    else document.getElementById('name-modal').classList.remove('hidden');
+    return;
+  }
   roomId=rid;roomPlayers=players;
   isHost=(socket.id===host);
   if(mu!==undefined){mutationMode=mu;mutationSeed=ms||0;}
@@ -791,7 +799,7 @@ socket.on('game_start',({players,bagSeed,mutationMode:mu,mutationSeed:ms,roomSet
 const ANIM_SPEED = 0.75;
 
 // PixiJS tickerのFPS上限を上げる（デフォルト60→120）
-PIXI.Ticker.shared.maxFPS = 0; // 0 = 無制限 (ブラウザのrAFに任せる)
+PIXI.Ticker.shared.maxFPS = 144; // 144fps (高リフレッシュレート対応)
 
 // ---- Seeded RNG ----
 function seededRng(seed){
@@ -809,7 +817,7 @@ function showCountdown(bagSeed,cb){
   const W=container.clientWidth||window.innerWidth,H=container.clientHeight||window.innerHeight;
   const res=settings.quality==='minimum'||settings.quality==='low'?1:settings.quality==='medium'?1.5:settings.quality==='ultra'?2.5:2;
   gameApp=new PIXI.Application({width:W,height:H,backgroundColor:0x030712,backgroundAlpha:1,transparent:false,antialias:settings.quality!=='minimum'&&settings.quality!=='low',resolution:res,autoDensity:true});
-  gameApp.ticker.maxFPS=0; // 無制限（ブラウザのrAFレートに従う）
+  gameApp.ticker.maxFPS=144; // 144fps
   container.appendChild(gameApp.view);
   gameState=new TetrisGame(bagSeed);
   renderer=new GameRenderer(gameApp,roomPlayers,gameState);
@@ -1183,7 +1191,9 @@ class TetrisGame{
   }
 
   tryResetLock(){
-    if(this.lockTimer&&!this.isValid(this.current,0,1)){clearTimeout(this.lockTimer);this.lockTimer=null;this.startLockTimer();}
+    if(this.lockTimer){
+      clearTimeout(this.lockTimer);this.lockTimer=null;this.startLockTimer();
+    }
   }
 
   softDrop(){
@@ -1350,8 +1360,6 @@ class TetrisGame{
                 this.garbageQueue.unshift({lines: chunk.lines - i, fromId: chunk.fromId, readyAt: now + 500, holeCol: holeCol});
                 break;
               }
-              // Messiness: 10%の確率で穴の位置が変わる
-              if(Math.random()<0.1) holeCol=Math.floor(Math.random()*getGameCols());
               const row=Array(getGameCols()).fill('G');row[holeCol]=0;this.board.push(row);this.board.shift();
               linesToAdd++;
               if(this.current)this.current.y=Math.max(0,this.current.y-1);
@@ -3433,7 +3441,7 @@ class FloatLabel{
   constructor(app,x,y,text,color,persistent=false){
     this.app=app;this.alive=true;this.persistent=persistent;
     this._ended=false;this.baseX=x;this.baseY=y;
-    this._timer=0;this._fadeDelay=persistent?999999:2200;this._fadeDur=700;
+    this._timer=0;this._fadeDur=600;
     const sz=persistent?20:17;
     const st=new PIXI.TextStyle({fontFamily:'Orbitron',fontSize:sz,fill:color,fontWeight:'900',letterSpacing:2,
       dropShadow:true,dropShadowColor:0x000000,dropShadowDistance:3,dropShadowBlur:4});
@@ -3445,25 +3453,25 @@ class FloatLabel{
   update(dt){
     if(!this.alive)return;
     if(this._popping){
-      this._popT+=dt;const p=Math.min(1,this._popT/250);const ease=1-(1-p)*(1-p);
+      this._popT+=dt;const p=Math.min(1,this._popT/200);const ease=1-(1-p)*(1-p);
       this.txt.scale.set(1.5-0.5*ease);this.txt.alpha=ease;
-      if(p>=1){this._popping=false;this.txt.scale.set(1);this.txt.alpha=1;}
+      if(p>=1){this._popping=false;this.txt.scale.set(1);this.txt.alpha=1;this._timer=0;}
       return;
     }
-    this._timer+=dt;
     if(this.persistent&&!this._ended)return;
-    if(this._timer>=this._fadeDelay){
-      const ft=this._timer-this._fadeDelay;const a=Math.max(0,1-ft/this._fadeDur);
-      this.txt.alpha=a;this.txt.x=this.baseX+(ft*0.04);
-      if(a<=0){this.alive=false;try{this.txt.destroy();}catch(e){}}
-    }
+    this._timer+=dt;
+    const a=Math.max(0,1-this._timer/this._fadeDur);
+    this.txt.alpha=a;
+    this.txt.scale.set(Math.max(0.1,1+this._timer*0.004),1);
+    this.txt.x=this.baseX+(this._timer*0.15);
+    if(a<=0){this.alive=false;try{this.txt.destroy();}catch(e){}}
   }
   updateText(t){
     if(!this.txt||!this.alive)return;
     const old=this.txt.text;this.txt.text=t;
     if(old!==t){this._popping=true;this._popT=0;this.txt.scale.set(1.4);}
   }
-  end(){this._ended=true;this._timer=0;this._fadeDelay=900;}
+  end(){this._ended=true;this._timer=0;}
   destroy(){this.alive=false;try{this.txt.destroy();}catch(e){}}
 }
 
@@ -3476,7 +3484,7 @@ class GameRenderer{
     this.boardOffsetY=0;this.boardOffsetX=0;
     this.tiltAngle=0;this.tiltTarget=0;this.shakePower=0;
     // 壁バウンス: 押し込み中は繰り返さない
-    this.wallBumpX=0;this._wallBumpActive=false;
+    this.wallBumpX=0;this._wallBumpActive=false;this._wallPressX=0;
     this.particles=[];this.projectiles=[];this.floatLabels=[];
     this.comboLabel=null;this.attackLabel=null;this._attackAccum=0;
     this.opBoardData={};this._flashAlpha=0;
@@ -4369,11 +4377,18 @@ class GameRenderer{
     }catch(e){}
   }
 
-  // スピン確定時のみ傾く
+  // スピン確定時: 回転方向に傾き＋少しバウンス
   onSpinTilt(dir){
     if(settings.tilt!=='on')return;
-    this.tiltTarget=dir>0?0.049:-0.049;
-    setTimeout(()=>{this.tiltTarget=0;},292); // T-spin tilt 1.2倍速
+    // 回転方向に傾く（dir>0=右回転=右傾き, dir<0=左回転=左傾き）
+    this.tiltTarget=dir>0?0.065:-0.065;
+    // 回転方向の斜め下に少し枠ごと動いて戻るバウンス
+    const bounceX=dir>0?-3.5:3.5;
+    const bounceY=2.5;
+    this._spinBounceX=bounceX;
+    this._spinBounceY=bounceY;
+    this._spinBounceTime=0;
+    setTimeout(()=>{this.tiltTarget=0;},292);
   }
 
   // 回転した瞬間のスピンキラキラ（小さめ・控えめ）
@@ -4420,18 +4435,22 @@ class GameRenderer{
     }
   }
 
-  // 壁バウンス: 押し込み中は繰り返さない
+  // 壁バウンス: 押している間は沈み込み、単発タップだけ短いバウンス
   onWallBump(dx){
+    const isHeld=dx>0?keyState['ArrowRight']:keyState['ArrowLeft'];
+    if(isHeld){
+      // 押しっぱなし: バウンスせず wallPressX に任せる
+      return;
+    }
     if(this._wallBumpActive)return;
     this._wallBumpActive=true;
     const bumpAmt=dx>0?6:-6;
     this.wallBumpX=bumpAmt;
-    // バウンス復帰後にフラグ解除
     setTimeout(()=>{this.wallBumpX=0;setTimeout(()=>{this._wallBumpActive=false;},50);},130);
   }
 
   onHardDrop(dropped){
-    const depth=Math.min(16,Math.floor(dropped*0.48)+4);
+    const depth=Math.min(6,Math.floor(dropped*0.18)+2);
     this.boardOffsetY=Math.max(this.boardOffsetY,depth);
     if(settings.particles!=='off'){
       const gs=this.gs;const gy=gs.ghostY();
@@ -4817,16 +4836,18 @@ class GameRenderer{
     const flashColor=isAnySpin?spinChunkColor:allClear?0xffff00:0xffffff;
     cleared.forEach(r=>{const dr=r-HIDDEN;if(dr<0)return;this.flashGfx.beginFill(flashColor,0.9);this.flashGfx.drawRect(0,dr*CELL,BOARD_W,CELL);this.flashGfx.endFill();});
     if(settings.shake==='on')this.shakePower=Math.min(16,count*3+(spinType?5:0)+(allClear?12:0));
+    if(count===1||count===2||count===3){
+      if(spinType)this.boardOffsetY=Math.max(this.boardOffsetY,18);
+    }
     if(count>=4||allClear)this.boardOffsetY=Math.max(this.boardOffsetY,24);
-    else if(count>=2)this.boardOffsetY=Math.max(this.boardOffsetY,10);
-    if(settings.tilt==='on'&&spinType==='TSPIN'){
-      this.tiltTarget=0.0525;
+    if(settings.tilt==='on'&&spinType){
+      this.tiltTarget=spinType==='TSPIN'?0.07:-0.055;
       setTimeout(()=>{this.tiltTarget=0;},292);
     }
     if(settings.particles!=='off'&&settings.quality!=='minimum'){
       cleared.forEach(r=>{
         const dr=r-HIDDEN;if(dr<0)return;
-        const n=settings.particles==='high'?14:5;
+        const n=settings.particles==='high'?7:3;
         for(let c=0;c<getGameCols();c++){
           const col=PIECE_COLORS[this.gs.board[r]?.[c]]||0xffffff;
           for(let i=0;i<n;i++)this.spawnParticle(this.mainBX+c*CELL+CELL/2,this.mainBY+dr*CELL+CELL/2,col);
@@ -4867,7 +4888,10 @@ class GameRenderer{
       else if(spinType==='MINI_TSPIN')lbl='MINI T-SPIN';
       else lbl=spinType.replace('SPIN',' SPIN');
     }
-    if(count===4&&!spinType)lbl='TETRIS';
+    if(count===4&&!spinType)lbl='QUAD';
+    if(count===1&&!spinType)lbl='Single';
+    if(count===2&&!spinType)lbl='Double';
+    if(count===3&&!spinType)lbl='Triple';
     if(allClear)lbl='★ ALL CLEAR ★';
     
     const b2bStr = (isB2B && this._b2bCount > 1) ? `B2B x${this._b2bCount} ` : (isB2B ? 'B2B ' : '');
@@ -4875,7 +4899,7 @@ class GameRenderer{
 
     if(ren>1)lbl+=(lbl?' │ ':'')+`REN ${ren-1}`;
     if(lbl){
-      const col=allClear?0xffff44:isB2B?0xffbe0b:spinChunkColor||0x00f5ff;
+      const col=allClear?0xffff44:0xffffff;
       this.floatLabels.push(new FloatLabel(this.app,lx,ly,lbl,col,false));ly+=38;
     }
     if(combo>0){
@@ -5666,7 +5690,7 @@ class GameRenderer{
   }
 
   updateBoardAnim(dt){
-    if(this.boardOffsetY>0){this.boardOffsetY*=0.63;if(this.boardOffsetY<0.3)this.boardOffsetY=0;}
+    if(this.boardOffsetY>0){this.boardOffsetY*=0.92;if(this.boardOffsetY<0.3)this.boardOffsetY=0;}
     // T-spin afterimage fade
     if(this._afterimageAlpha>0.01){
       if(this._afterimageLife!==undefined&&this._afterimageLife>0){
@@ -5685,7 +5709,7 @@ class GameRenderer{
       this._drawAfterimage();
       if(this._afterimageAlpha<=0.01){this._afterimageAlpha=0;this.afterimageGfx.clear();this.afterimageGfx.alpha=0;}
     }
-    this.tiltAngle+=(this.tiltTarget-this.tiltAngle)*0.21;
+    this.tiltAngle+=(this.tiltTarget-this.tiltAngle)*0.06;
     if(Math.abs(this.tiltAngle)<0.0005&&Math.abs(this.tiltTarget)<0.0005)this.tiltAngle=0;
     if(settings.tilt==='on')this.boardCont.rotation=this.tiltAngle;else this.boardCont.rotation=0;
     if(this.shakePower>0){
@@ -5696,13 +5720,40 @@ class GameRenderer{
     }
     this.wallBumpX*=0.55;
     if(Math.abs(this.wallBumpX)<0.2)this.wallBumpX=0;
+    // 壁押し込み: 右キーを押しながら壁に触れているときに枠が沈む
+    if(this.gs&&this.gs.current){
+      const isRightHeld=keyState['ArrowRight'];
+      const isLeftHeld=keyState['ArrowLeft'];
+      const atRightWall=!this.gs.isValid(this.gs.current,1,0);
+      const atLeftWall=!this.gs.isValid(this.gs.current,-1,0);
+      if(isRightHeld&&atRightWall){
+        this._wallPressX=Math.min(this._wallPressX+dt*0.04,4);
+      } else if(isLeftHeld&&atLeftWall){
+        this._wallPressX=Math.max(this._wallPressX-dt*0.04,-4);
+      } else {
+        this._wallPressX*=0.85;
+        if(Math.abs(this._wallPressX)<0.3)this._wallPressX=0;
+      }
+    } else {
+      this._wallPressX*=0.85;
+      if(Math.abs(this._wallPressX)<0.3)this._wallPressX=0;
+    }
+    // スピンバウンス更新
+    if(this._spinBounceX!==undefined&&Math.abs(this._spinBounceX)>0.05){
+      this._spinBounceTime=(this._spinBounceTime||0)+dt;
+      const t=Math.min(this._spinBounceTime/220,1);
+      this._spinBounceX*=0.85;
+      if(t>=1){this._spinBounceX=0;this._spinBounceTime=0;}
+    }
 
     if(this._gameOverTick){
       this._gameOverTick(dt);
     } else {
       const sc=this._uiScale||1;
-      this.boardWrap.x=this.mainBX+BOARD_W*sc/2+this.boardOffsetX+this.wallBumpX;
-      this.boardWrap.y=this.mainBY+BOARD_H*sc/2+this.boardOffsetY;
+      const spinBounce=this._spinBounceX||0;
+      this.boardWrap.x=this.mainBX+BOARD_W*sc/2+this.boardOffsetX+this.wallBumpX+spinBounce+(this._wallPressX||0);
+      const spinBounceY=this._spinBounceY||0;
+      this.boardWrap.y=this.mainBY+BOARD_H*sc/2+this.boardOffsetY+spinBounceY;
     }
     for(const pid of Object.keys(this.opBoardData)){
       const d=this.opBoardData[pid];

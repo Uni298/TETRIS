@@ -1340,10 +1340,39 @@ class BotPlayer {
     // Safety check: verify placement is actually valid
     // If y is very small (near top of hidden zone) and piece wasn't supposed to be there, skip
     if (!isValid(this.board, type, rot, x, y)) {
-      // Placement is invalid — just spawn next piece without placing
-      console.warn(`[BOT] Invalid placement skipped: ${type} rot=${rot} x=${x} y=${y}`);
-      this.spawnPiece();
-      return;
+      // Try to find the correct Y for this position (board may have changed since think())
+      let foundY = y;
+      // Search upward first (piece may be inside blocks after garbage arrived)
+      while (foundY > -2 && !isValid(this.board, type, rot, x, foundY)) foundY--;
+      if (foundY >= -2 && isValid(this.board, type, rot, x, foundY)) {
+        // Found valid Y above — use it
+        y = foundY;
+      } else {
+        // Try dropping it further (piece may be above blocks now)
+        foundY = y;
+        while (isValid(this.board, type, rot, x, foundY + 1)) foundY++;
+        if (isValid(this.board, type, rot, x, foundY)) {
+          y = foundY;
+        } else {
+          // Still invalid — try shifting x by -1, 0, +1, -2, +2
+          let found = false;
+          for (const dx of [0, -1, 1, -2, 2]) {
+            const nx = x + dx;
+            if (nx < 0 || nx >= this.cols) continue;
+            let ny = y;
+            while (isValid(this.board, type, rot, nx, ny + 1)) ny++;
+            if (isValid(this.board, type, rot, nx, ny)) {
+              x = nx; y = ny; found = true; break;
+            }
+          }
+          if (!found) {
+            // Truly can't place — skip
+            console.warn(`[BOT] Invalid placement skipped: ${type} rot=${rot} x=${x} y=${y}`);
+            this.spawnPiece();
+            return;
+          }
+        }
+      }
     }
     // Also verify it's actually resting (can't go one lower) — if it can go lower, drop it there
     while (isValid(this.board, type, rot, x, y + 1)) y++;
@@ -1472,8 +1501,6 @@ class BotPlayer {
             this.garbageQueue.unshift({lines: g.lines - i, fromId: g.fromId, readyAt: now + 500, holeCol: hc});
             break;
           }
-          // Messiness: 10%の確率で穴の位置が変わる
-          if (Math.random() < 0.1) hc = Math.floor(Math.random() * this.cols);
           const row=Array(this.cols).fill('G');row[hc]=0;this.board.push(row);this.board.shift();
           linesToAdd++;
         }
