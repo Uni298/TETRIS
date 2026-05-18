@@ -3,6 +3,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const path = require('path');
 const fs = require('fs');
+const { spawnSync } = require('child_process');
 
 // ── CLI flags ──────────────────────────────────────────────────────
 // Usage: npm start -- --ai          (enable training data recording)
@@ -73,6 +74,7 @@ function stopRecording(roomId, result) {
 
 const rooms = {};
 const lastRoom = {};
+const onlinePlayers = {}; // socket.id -> name
 
 // ── Constants (mirror client) ──────────────────────────────────────
 const COLS = 10, ROWS = 20, HIDDEN = 3;
@@ -189,10 +191,11 @@ function detectSpin(board, type, rot, x, y, wasKicked) {
   if (!atBottom) return null;
 
   if (type === 'I' && wasKicked) return 'ISPIN';
-  if (type === 'S' && atBottom) return 'SSPIN';
-  if (type === 'Z' && atBottom) return 'ZSPIN';
-  if (type === 'L' && atBottom) return 'LSPIN';
-  if (type === 'J' && atBottom) return 'JSPIN';
+  // S/Z/L/J: only count as spin when wall-kick was required (not plain drop)
+  if (type === 'S' && wasKicked && atBottom) return 'SSPIN';
+  if (type === 'Z' && wasKicked && atBottom) return 'ZSPIN';
+  if (type === 'L' && wasKicked && atBottom) return 'LSPIN';
+  if (type === 'J' && wasKicked && atBottom) return 'JSPIN';
 
   return null;
 }
@@ -280,6 +283,15 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
       if (linesCleared === 1) score += 3000;
       else score += 500;
     }
+    // Penalize single-column deep wells (vertical I-shaped holes)
+    for (let c = 0; c < cols; c++) {
+      const lh = c > 0 ? heights[c-1] : 99;
+      const rh = c < cols-1 ? heights[c+1] : 99;
+      const wellDepth = Math.min(lh, rh) - heights[c];
+      if (wellDepth >= 3) score -= wellDepth * wellDepth * 12;
+    }
+    // Strong bumpiness penalty: flat is critical for 4-wide chains
+    score -= bumpiness * 15;
   } else {
     // Normal mode line clear bonuses
     const linePts = [0, 50, 250, 600, 1800];
@@ -288,10 +300,17 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
 
   // Extra bonus for clearing when stack is dangerous
   if (linesCleared > 0 && maxH > 10) score += linesCleared * (maxH - 10) * 40;
-  // Spin bonuses
-  if (spinType === 'TSPIN' && linesCleared > 0) score += linesCleared * 500;
-  else if (spinType === 'MINI_TSPIN' && linesCleared > 0) score += 100;
-  else if (spinType && linesCleared > 0) score += linesCleared * 300; // S/Z/L/J/I spin
+  // Spin bonuses (CC-inspired values)
+  if (spinType === 'TSPIN') {
+    if (linesCleared === 1) score += 1200;
+    else if (linesCleared === 2) score += 2800; // TSD
+    else if (linesCleared === 3) score += 4500; // TST
+    else if (linesCleared > 0) score += linesCleared * 500;
+  } else if (spinType === 'MINI_TSPIN' && linesCleared > 0) {
+    score += 200;
+  } else if (spinType && linesCleared > 0) {
+    score += linesCleared * 600; // S/Z/L/J/I spin
+  }
   if (isB2B)   score += 700;
   if (combo>0) score += 70 * combo;
   if ((ren||0) >= 2) score += (ren||0) * 120;
@@ -360,8 +379,8 @@ function evaluateBoard(board, linesCleared, spinType, isB2B, combo, level, ren) 
     if (wellCount >= 2) score -= (wellCount - 1) * 300;
   }
 
-  // T-spin setup reward removed for BOT
-  if (maxH <= 12) score += 0; // T-spin setup bonus disabled
+  // ── T-spin setup reward ──────────────────────────────────────
+  if (maxH <= 14) score += evaluateTspinSetup(board, heights);
 
   // Variance penalty (flat is good)
   const variance = heights.reduce((a,h)=>a+Math.pow(h-avgH,2),0) / cols;
@@ -658,7 +677,7 @@ function pcProximityScore(board, filledCells) {
 // board: 現在の盤面（0=空）
 // pieces: 試すミノ列（最大10）
 // timeLimitMs: 時間制限
-function findPCSequence(board, pieces, timeLimitMs = 120) {
+function findPCSequence(board, pieces, timeLimitMs = 1000) {
   const cols = board[0].length;
   // 盤面の最高行を求める
   let highestRow = -1;
@@ -897,6 +916,31 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
       return b;
     }
 
+    // ── T-spin ボーナス強化 ────────────────────────────────────
+    if (p.spin === 'TSPIN') {
+      if (p.lines === 1) b += 1200;
+      else if (p.lines === 2) b += 2800; // TSD
+      else if (p.lines === 3) b += 4500; // TST
+    } else if (p.spin === 'MINI_TSPIN' && p.lines > 0) {
+      b += 200; // mini T-spin is still fine
+    } else if (p.spin && p.spin !== 'NONE' && p.lines > 0) {
+      // S/Z/L/J/I spin
+      b += p.lines * 600;
+    }
+
+    // ── T-spinセットアップ保持ボーナス (T以外のピース) ──────────
+    if (p.type !== 'T' && p.board) {
+      b += evaluateTspinSetup(p.board, (() => {
+        const cols = p.board[0].length;
+        return Array.from({ length: cols }, (_, c) => {
+          for (let r = 0; r < ROWS + HIDDEN; r++) {
+            if (p.board[r][c]) return ROWS + HIDDEN - r;
+          }
+          return 0;
+        });
+      })()) * 0.5;
+    }
+
     // PC-friendly: pcBonusが大きいとき（pcHuntMode）は
     // 盤面を低く・フラットに保つことを強く報酬
     if (pcBonus > 0 && p.board) {
@@ -922,7 +966,7 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
 
   // Jitter: small random noise to avoid perfectly deterministic play
   // Higher botLevel = less jitter. Level5=±20, Level3=±120, Level1=±400
-  const jitterAmp = [0, 400, 220, 120, 60, 20][botLevel] || 100;
+  const jitterAmp = [0, 400, 220, 120, 60, 20, 0][botLevel] || 0;
 
   // BFS for current piece (finds soft-drop reachable placements)
   function evalPlacementsBFS(useType, useHold) {
@@ -973,7 +1017,7 @@ function botChoosePlacement(board, type, nextTypes, holdType, b2b, combo, level,
 
 // ── BotPlayer ──────────────────────────────────────────────────────
 class BotPlayer {
-  constructor(id, name, level, roomId, bag) {
+  constructor(id, name, level, roomId, bag, customCode) {
     this.id = id; this.name = name; this.level = level; this.roomId = roomId;
     this.isBot = true; this.botLevel = level;
     // Determine column count from the room if possible, otherwise default to 10
@@ -989,6 +1033,22 @@ class BotPlayer {
     this.garbageQueue = [];
     this.thinkTimer = null;
     this.currentPiece = null;
+    // Custom bot code
+    this.customCode = customCode || null;
+    this._customFn = null;
+    if (this.customCode) {
+      try {
+        // If the user defines function decide(state){...}, call it.
+        // Otherwise just evaluate the code directly.
+        this._customFn = new Function('state', this.customCode + '\nreturn (typeof decide==="function"?decide(state):void 0);');
+      }
+      catch(e) {
+        console.warn(`[BOT] Invalid custom code for ${name}:`, e.message);
+        // パースエラーをルーム全員へ通知
+        const room = rooms[roomId];
+        if (room) io.to(roomId).emit('bot_code_error', { type: 'parse', botName: name, message: e.message });
+      }
+    }
     // PC hunt state
     this.pcHuntMode = true;      // 常時PC狙いモード
     this.pcPiecesPlaced = 0;     // 累計配置数
@@ -1007,6 +1067,16 @@ class BotPlayer {
     this.b2bCount = 0;
 
     this.spawnPiece();
+
+    // Cold Clear (level 6) の場合はここで即時初期化する。
+    // _thinkColdClear での遅延初期化だとキューのタイミングがズレるため。
+    this._ccBot = null;
+    this._ccPending = false;
+    this._ccInitFailed = false;
+    this._ccQueueSentCount = 0;
+    if (this.botLevel === 6) {
+      this._ccInit();
+    }
   }
 
   get thinkDelay() { return [0, 2200, 1400, 700, 280, 80][this.level] || 400; }
@@ -1087,8 +1157,389 @@ class BotPlayer {
     return null;
   }
 
+  _buildCustomState() {
+    const room = rooms[this.roomId];
+    const opponents = room ? [...room.players, ...room.bots]
+      .filter(p => p.id !== this.id && p.alive)
+      .map(p => ({
+        name: p.name,
+        board: p.board ? p.board.map(r => [...r]) : null,
+        score: p.score || 0,
+        lines: p.lines || 0,
+        level: p.level || 1,
+        alive: p.alive,
+        combo: p.combo !== undefined ? p.combo : 0,
+        b2b: !!p.b2b,
+        isBot: !!p.isBot
+      })) : [];
+    return {
+      board: this.board.map(r => [...r]),
+      currentPiece: { ...this.currentPiece },
+      nextPieces: this.nextQueue.slice(0, 5).map(t => t),
+      holdPiece: this.holdPiece,
+      combo: Math.max(0, this.combo),
+      b2b: this.b2b,
+      lines: this.lines,
+      score: this.score,
+      level: this.lvl,
+      ren: this.ren,
+      garbageQueue: this.garbageQueue.map(g => ({ ...g })),
+      opponents,
+      cols: this.cols,
+      rows: ROWS,
+      isFourWide: this.cols <= 4
+    };
+  }
+
+  // ── Cold Clear (real library) ─────────────────────────────────
+  // ── Cold Clear (real library) ────────────────────────────────────
+  // cold-clear.js (koffi FFI) による本物の Cold Clear 実装
+  // ─────────────────────────────────────────────────────────────────
+  // CC ピース番号 ↔ ゲーム内ピース文字列の対応
+  // CC: I=0 O=1 T=2 L=3 J=4 S=5 Z=6
+  static _ccPieceId(type) {
+    return { I:0, O:1, T:2, L:3, J:4, S:5, Z:6 }[type] ?? -1;
+  }
+
+  // 内部ボード（top-down, 0=cell, 非0=filled）→ CC 用 40行×10列 bool配列（bottom-up）
+  _ccBuildField() {
+    const TOTAL = ROWS + HIDDEN;
+    const field = Array.from({length:40}, () => Array(10).fill(false));
+    for (let r = 0; r < TOTAL; r++) {
+      const ccRow = TOTAL - 1 - r; // bottom-up
+      for (let c = 0; c < 10; c++) {
+        field[ccRow][c] = !!this.board[r][c];
+      }
+    }
+    return field;
+  }
+
+  // CC の expected_x/expected_y (4 cells, bottom-up) から
+  // ゲーム内の rot と x を直接逆算し、BFS合法手リストから該当配置を返す。
+  _ccMoveToBfsPlacement(ccMove, type, bfsPlacements) {
+    const xs = Array.from(ccMove.expected_x);
+    const ys = Array.from(ccMove.expected_y);
+
+    // CC の y は bottom-up (0=bottom)。ゲーム内 y は top-down。
+    const TOTAL = ROWS + HIDDEN;
+    // ゲーム内座標 (top-down)
+    const gCells = xs.map((cx, i) => ({ x: cx, y: TOTAL - 1 - ys[i] }));
+
+    // CCの4セル座標と PIECE_SHAPES の各 rot を照合して rot と x を特定する。
+    // アルゴリズム:
+    //   shape の各 rot について、セルのリストを (row, col) で列挙。
+    //   gCells の x最小値 - shape の col最小値 = piece_x
+    //   gCells の y最小値 - shape の row最小値 = piece_y (top-left corner)
+    //   その piece_x/piece_y でセルを生成して gCells と完全一致すれば rot 確定。
+
+    let targetRot = -1;
+    let targetX = -1;
+    let targetY = -1;
+
+    for (let rot = 0; rot < 4; rot++) {
+      const shape = PIECE_SHAPES[type][rot];
+      // shape のセル (srow, scol) を列挙
+      const sCells = [];
+      for (let srow = 0; srow < shape.length; srow++)
+        for (let scol = 0; scol < shape[srow].length; scol++)
+          if (shape[srow][scol]) sCells.push({ row: srow, col: scol });
+
+      if (sCells.length !== gCells.length) continue;
+
+      // piece_x = gCells.x_min - sCells.col_min
+      const gXmin = Math.min(...gCells.map(c => c.x));
+      const gYmin = Math.min(...gCells.map(c => c.y));
+      const sColMin = Math.min(...sCells.map(c => c.col));
+      const sRowMin = Math.min(...sCells.map(c => c.row));
+
+      const px = gXmin - sColMin;
+      const py = gYmin - sRowMin;
+
+      // piece (px, py, rot) のセルが gCells と完全一致するか確認
+      const genCells = sCells.map(s => ({ x: px + s.col, y: py + s.row }));
+      const match = gCells.every(gc => genCells.some(c => c.x === gc.x && c.y === gc.y));
+
+      if (match) {
+        targetRot = rot;
+        targetX = px;
+        targetY = py;
+        break;
+      }
+    }
+
+    if (targetRot === -1) {
+      // 逆算失敗: BFS全配置と照合してセル一致数最大のものを選ぶ（フォールバック）
+      console.warn(`[CC] _ccMoveToBfsPlacement: failed to decode rot for ${type}, falling back to cell-match`);
+      let bestP = null;
+      let bestMatch = -1;
+      for (const p of bfsPlacements) {
+        const shape = PIECE_SHAPES[type][p.rot];
+        const cells = [];
+        for (let row = 0; row < shape.length; row++)
+          for (let col = 0; col < shape[row].length; col++)
+            if (shape[row][col]) cells.push({ x: p.x + col, y: p.y + row });
+        let matches = 0;
+        for (const gc of gCells)
+          if (cells.some(c => c.x === gc.x && c.y === gc.y)) matches++;
+        if (matches > bestMatch) { bestMatch = matches; bestP = p; }
+        if (matches === 4) break;
+      }
+      return bestP;
+    }
+
+    // BFSリストから rot/x が一致するものを返す（y は hardDrop で決まるので無視）
+    const found = bfsPlacements.find(p => p.rot === targetRot && p.x === targetX);
+    if (found) return found;
+
+    // BFSに存在しない（到達不可能）場合: rot/x だけ一致するものを探す
+    // （BFS未到達でも hardDrop で置ける場合がある）
+    console.warn(`[CC] placement rot=${targetRot} x=${targetX} not in BFS for ${type}`);
+    return null;
+  }
+
+  // CC インスタンスの初期化（ゲーム開始時 or reset 時）
+  _ccInit() {
+    if (this._ccBot) return;
+    try {
+      const { ColdClearBot, defaultOptions, PcPriority } = require('./cold-clear');
+
+      // CC の cc_launch_async に渡す queue は「current piece から始まるピース列」。
+      // current piece が先頭、続いて nextQueue の順で渡す。
+      // (CC内部: queue[0] が現在のピース、queue[1]以降がnext)
+      const queue = [
+        this.currentPiece.type,
+        ...this.nextQueue,
+      ].map(t => BotPlayer._ccPieceId(t)).filter(n => n >= 0);
+
+      const options = defaultOptions({
+        pcloop:    PcPriority.ATTACK,
+        use_hold:  true,
+        speculate: true,
+        threads:   2,
+        min_nodes: 10_000,
+        max_nodes: 4_000_000_000,
+      });
+
+      this._ccBot = new ColdClearBot({ options, queue });
+      this._ccPending = false;
+      this._ccInitFailed = false;
+      // CCへのキュー供給済み枚数を追跡する。
+      // launch時に current(1) + nextQueue(6) = 7枚渡してある。
+      // spawnPiece()のたびに nextQueue末尾の1枚を addNextPiece で追加する。
+      // 何枚供給済みかを記録して二重送信を防ぐ。
+      this._ccQueueSentCount = queue.length;
+      console.log(`[CC] Initialized for bot ${this.name}, queue=${queue.length}`);
+    } catch(e) {
+      console.error('[CC] Failed to initialize ColdClearBot:', e.message);
+      console.error('[CC] Stack:', e.stack);
+      this._ccBot = null;
+      this._ccInitFailed = true;
+    }
+  }
+
+  // reset後にCC側のキューを現在のゲーム状態で再同期する
+  _ccReSyncQueue() {
+    if (!this._ccBot) return;
+    try {
+      // resetはフィールドのみリセットし、キューはCC内部で保持される。
+      // ただし投機が外れたケースのためにcurrent+nextを再通知する。
+      // CCはreset後も内部キューを維持するため、ここでは
+      // 「resetで失われたキュー」を補充するだけにとどめる。
+      // 安全のため: 現在のcurrent + nextQueue を全てaddNextPieceで送る
+      // (CCは重複分は無視するわけではないので、resetを使う際は
+      //  新しいBotインスタンスを作る方が確実)
+      const allPieces = [
+        this.currentPiece.type,
+        ...this.nextQueue,
+      ].map(t => BotPlayer._ccPieceId(t)).filter(n => n >= 0);
+      for (const pid of allPieces) {
+        this._ccBot.addNextPiece(pid);
+      }
+      this._ccQueueSentCount = allPieces.length;
+    } catch(e) {
+      console.error('[CC] _ccReSyncQueue failed:', e.message);
+    }
+  }
+
+  // Level 5 AI に直接フォールバック（再帰を避ける）
+  _fallbackAI(onDone) {
+    const placement = botChoosePlacement(
+      this.board, this.currentPiece.type,
+      this.nextQueue.slice(0, 5),
+      this.holdPiece,
+      this.b2b, Math.max(0, this.combo),
+      this.lvl, 5, this.ren, 0
+    );
+    if (placement) {
+      this.executePlacement(placement, onDone);
+    } else if (onDone) {
+      onDone();
+    }
+  }
+
+  _thinkColdClear(onDone) {
+    if (!this.alive || !this.currentPiece) { if (onDone) onDone(); return; }
+    // CC ライブラリが使えない場合は手番をスキップ（lv5にフォールバックしない）
+    if (this._ccInitFailed) {
+      console.error('[CC] Library unavailable, skipping turn.');
+      if (onDone) onDone();
+      return;
+    }
+
+    // 初回初期化
+    if (!this._ccBot) this._ccInit();
+    if (!this._ccBot) {
+      console.error('[CC] Bot not available, skipping turn.');
+      if (onDone) onDone();
+      return;
+    }
+
+    const bot = this._ccBot;
+
+    // 手の要求（まだ発行していなければ）
+    if (!this._ccPending) {
+      const incoming = this.garbageQueue.reduce((s, g) => s + g.lines, 0);
+      try {
+        bot.requestNextMove(incoming);
+        this._ccPending = true;
+      } catch(e) {
+        console.error('[CC] requestNextMove failed:', e.message);
+        if (onDone) onDone();
+        return;
+      }
+    }
+
+    // ポーリング（最大 4000ms）
+    const startPoll = Date.now();
+    const POLL_LIMIT = 4000;
+
+    const pollLoop = () => {
+      if (!this.alive) { if (onDone) onDone(); return; }
+
+      let res;
+      try {
+        res = bot.pollNextMove();
+      } catch(e) {
+        console.error('[CC] pollNextMove error:', e.message);
+        this._ccPending = false;
+        if (onDone) onDone();
+        return;
+      }
+
+      if (res.status === 'provided') {
+        this._ccPending = false;
+        this._applyCC(res.move, onDone);
+        return;
+      }
+
+      if (res.status === 'dead') {
+        console.warn('[CC] Bot died, reinitializing...');
+        try { bot.destroy(); } catch(e) {}
+        this._ccBot = null;
+        this._ccPending = false;
+        this._ccInitFailed = false;
+        this._ccInit();
+        // 再初期化後は次の手番から使う。今の手番はスキップ。
+        if (onDone) onDone();
+        return;
+      }
+
+      // waiting
+      if (Date.now() - startPoll > POLL_LIMIT) {
+        console.warn('[CC] Poll timeout after', POLL_LIMIT, 'ms, skipping turn.');
+        this._ccPending = false;
+        if (onDone) onDone();
+        return;
+      }
+
+      setTimeout(pollLoop, 10);
+    };
+
+    pollLoop();
+  }
+
+  // CC の move を受け取り、ゲーム内配置に変換して実行する
+  _applyCC(mv, onDone) {
+    if (!this.alive || !this.currentPiece) { if (onDone) onDone(); return; }
+
+    const useHold = !!mv.hold;
+
+    // ── 配置するピースを特定 ──────────────────────────────────
+    let type;
+    if (useHold) {
+      if (this.holdPiece) {
+        type = this.holdPiece;
+      } else {
+        type = this.nextQueue[0];
+      }
+    } else {
+      type = this.currentPiece.type;
+    }
+
+    // ── デバッグ: CCの生の出力をログ ──────────────────────────
+    const rawXs = Array.from(mv.expected_x);
+    const rawYs = Array.from(mv.expected_y);
+    console.log(`[CC DEBUG] type=${type} hold=${useHold} raw_x=[${rawXs}] raw_y=[${rawYs}]`);
+
+    // ── BFS合法手と照合 ──────────────────────────────────────
+    const bfsPlacements = getAllPlacementsBFS(this.board, type);
+    let placement = null;
+
+    if (bfsPlacements.length > 0) {
+      placement = this._ccMoveToBfsPlacement(mv, type, bfsPlacements);
+    }
+
+    if (!placement) {
+      console.warn('[CC] No valid placement found for', type);
+      if (onDone) onDone();
+      return;
+    }
+
+    this.executePlacement({ ...placement, useHold }, onDone);
+  }
+
+
   think(onDone) {
     if (!this.alive || !this.currentPiece) { if(onDone)onDone(); return; }
+
+    // ── COLD CLEAR MODE ──────────────────────────────────────────
+    if (this.botLevel === 6) {
+      this._thinkColdClear(onDone);
+      return;
+    }
+
+    // ── CUSTOM BOT CODE PATH ──────────────────────────────────────
+    if (this._customFn) {
+      try {
+        const state = this._buildCustomState();
+        const result = this._customFn(state);
+        if (result && result.x !== undefined && result.rotation !== undefined) {
+          const r = ((result.rotation % 4) + 4) % 4;
+          const x = result.x;
+          // Verify placement is reachable via BFS from spawn
+          const bfsPlacements = getAllPlacementsBFS(this.board, this.currentPiece.type);
+          const matched = bfsPlacements.find(p => p.rot === r && p.x === x);
+          if (matched) {
+            this.executePlacement({ ...matched, useHold: !!result.useHold }, onDone);
+            return;
+          } else if (isValid(this.board, this.currentPiece.type, r, x, 0)) {
+            // Fallback: placement is valid at y=0, use BFS path
+            const targetY = hardDropY(this.board, this.currentPiece.type, r, x, 0);
+            this.executePlacement({ rot: r, x, y: targetY, useHold: !!result.useHold, needsSoftDrop: true }, onDone);
+            return;
+          } else {
+            console.warn(`[BOT] Custom placement invalid for ${this.name}: type=${this.currentPiece.type} rot=${r} x=${x}`);
+          }
+        } else {
+          console.warn(`[BOT] Custom code returned invalid result for ${this.name}:`, JSON.stringify(result));
+        }
+      } catch(e) {
+        console.warn(`[BOT] Custom code error for ${this.name}:`, e.message);
+        // 実行時エラーをルームへ通知
+        io.to(this.roomId).emit('bot_code_error', { type: 'runtime', botName: this.name, message: e.message });
+      }
+      // Fall through to normal AI if custom code fails/invalid
+    }
 
     // ── PC HUNT MODE ─────────────────────────────────────────────
     // 連続失敗が多すぎる場合は一時的に通常AIに切り替え（閾値を12に緩和）
@@ -1119,8 +1570,8 @@ class BotPlayer {
         this._pcSeqCache = null;
       }
 
-      // ── DFS でPCシーケンスを探索（時間を200msに増加）──────────
-      const result = this._tryFindPC(200);
+      // ── DFS でPCシーケンスを探索（時間を80msに制限）──────────
+      const result = this._tryFindPC(1000);
 
       if (result && result.seq.length > 0) {
         this.pcFailed = 0;
@@ -1186,33 +1637,26 @@ class BotPlayer {
 
     if (useHold) {
       if (this.holdPiece) {
+        // ホールドにピースがある: 現在のピースとホールドを交換
         const prev = this.holdPiece;
         this.holdPiece = this.currentPiece.type;
         const _hspX = Math.floor((this.cols - 4) / 2);
         this.currentPiece = { type: prev, rotation: 0, x: _hspX, y: 0 };
         this.holdUsed = true;
-        // Broadcast hold action then continue with new current piece
-        // The placement already has the right rot/x for the held piece
+        // fall-through → currentPiece.type は交換後のピース
       } else {
-        // No hold yet: stash current, spawn next, re-decide
+        // ホールドが空: 現在をホールドに退避し、next[0] をスポーン
+        // _applyCC が事前に rot/x をそのピース用に解決済みなので
+        // spawnPiece() だけして下の _animatePlacement に fall-through する
         this.holdPiece = this.currentPiece.type;
         this.holdUsed = true;
         this.spawnPiece();
-        const p2 = botChoosePlacement(
-          this.board, this.currentPiece.type, this.nextQueue.slice(0,5),
-          this.holdPiece, this.b2b, Math.max(0,this.combo), this.lvl, this.level, this.ren
-        );
-        if (p2) this.executePlacement(p2, onDone); else if(onDone)onDone();
-        return;
+        // fall-through
       }
     }
 
     const type = this.currentPiece.type;
     const targetY = hardDropY(this.board, type, rot, x, 0);
-
-    // Decide: soft drop needed? (piece can't be reached by pure hard drop from spawn)
-    const directY = hardDropY(this.board, type, rot, x, 0);
-    // Check if target rot/x is reachable from (rot=0, x=3) without soft drop
     const needsSoftDrop = placement.needsSoftDrop || false;
 
     this._animatePlacement(type, rot, x, targetY, needsSoftDrop, () => {
@@ -1263,23 +1707,36 @@ class BotPlayer {
   _buildDirectPath(type, rot, x, targetY) {
     const board = this.board;
     const steps = [];
-    let cr = 0, cx = Math.floor((this.cols - 4) / 2);
+    const spawnX = Math.floor((this.cols - 4) / 2);
+    let cr = 0, cx = spawnX, cy = -2; // start from actual spawn position
 
-    // Rotate
-    const rotSteps = rot <= 2 ? rot : 4 - rot;
-    const rotDir   = rot <= 2 ? 1 : -1;
+    // Rotate using SRS (with wall kicks), try both CW and CCW
+    const cwSteps = ((rot - 0) % 4 + 4) % 4;  // clockwise rotations to reach target
+    const ccwSteps = (4 - cwSteps) % 4;         // counter-clockwise
+    const rotSteps = cwSteps <= ccwSteps ? cwSteps : ccwSteps;
+    const rotDir   = cwSteps <= ccwSteps ? 1 : -1;
     for (let i = 0; i < rotSteps; i++) {
-      const res = tryRotate(board, type, cr, cx, 0, rotDir);
-      if (res) { cr = res.rot; cx = res.x; }
-      steps.push({ rot: cr, x: cx, y: 0 });
+      const res = tryRotate(board, type, cr, cx, cy, rotDir);
+      if (res) { cr = res.rot; cx = res.x; cy = res.y; }
+      else {
+        // Can't rotate at spawn — try at y=0
+        const res2 = tryRotate(board, type, cr, cx, 0, rotDir);
+        if (res2) { cr = res2.rot; cx = res2.x; cy = 0; }
+      }
+      steps.push({ rot: cr, x: cx, y: Math.max(cy, -2) });
     }
+
+    // Move to y=0 area before sliding (ensure piece is in visible zone for sliding)
+    // Actually slide at current height if valid
+    const slideY = cy;
 
     // Slide horizontally
     while (cx !== x) {
       const dir = cx < x ? 1 : -1;
-      if (isValid(board, type, cr, cx+dir, 0)) cx += dir;
+      if (isValid(board, type, cr, cx+dir, slideY)) cx += dir;
+      else if (isValid(board, type, cr, cx+dir, 0)) { cx += dir; cy = 0; }
       else break;
-      steps.push({ rot: cr, x: cx, y: 0 });
+      steps.push({ rot: cr, x: cx, y: Math.max(cy, -2) });
     }
 
     // Hard drop (instant — show final position)
@@ -1294,8 +1751,10 @@ class BotPlayer {
 
     const visited = new Map();
     const _fspX = Math.floor((this.cols - 4) / 2);
-    const queue = [{ rot: 0, x: _fspX, y: 0 }];
-    visited.set(`0,${_fspX},0`, null);
+    // Spawn at y=-2 (hidden zone), must search from there
+    const spawnY = -2;
+    const queue = [{ rot: 0, x: _fspX, y: spawnY }];
+    visited.set(`0,${_fspX},${spawnY}`, null);
 
     let qi = 0, found = false;
     outer: while (qi < queue.length) {
@@ -1456,7 +1915,7 @@ class BotPlayer {
     // ── Perfect Clear detection ──────────────────────────────────
     const allClear = this.board.every(r=>r.every(c=>c===0));
     if (allClear) {
-      attack += 10;
+      attack += 6;
       this.pcCycle++;      // PCサイクル達成！
       this.pcFailed = 0;   // 失敗カウントリセット
       this.pcHuntMode = true; // 次のPCサイクルへ
@@ -1486,6 +1945,7 @@ class BotPlayer {
     // Remaining garbage after cancellation goes to board
     const remaining = armed.filter(g => g.lines > 0);
     // コンボ中（ren>=1）はゴミを適用しない
+    let _garbageApplied = false;
     if (remaining.length > 0 && this.ren < 1) {
       let linesToAdd = 0;
       const CAP = 8;
@@ -1505,7 +1965,31 @@ class BotPlayer {
           linesToAdd++;
         }
       }
-    } else if (remaining.length > 0) {
+      _garbageApplied = linesToAdd > 0;
+      // Cold Clear: ゴミで盤面が変わったのでBotをリセット。
+      // 新しいBotインスタンスを作るとフィールドが空になるため、
+      // reset APIでフィールドを更新した後、キューを再送信する。
+      if (_garbageApplied && this._ccBot && this.botLevel === 6) {
+        try {
+          this._ccBot.reset(this._ccBuildField(), this.b2b, Math.max(0, this.combo + 1));
+          // reset後はCC内部キューが不定なので current + nextQueue を再通知
+          const pieces = [
+            this.currentPiece.type,
+            ...this.nextQueue,
+          ].map(t => BotPlayer._ccPieceId(t)).filter(n => n >= 0);
+          for (const pid of pieces) {
+            try { this._ccBot.addNextPiece(pid); } catch(e) {}
+          }
+          this._ccPending = false;
+        } catch(e) {
+          console.error('[CC] reset/resync failed:', e.message);
+          // 失敗時はBotを再作成
+          try { this._ccBot.destroy(); } catch(_) {}
+          this._ccBot = null;
+          this._ccPending = false;
+          this._ccInit();
+        }
+      }
       // コンボ中は相殺されなかったゴミをキューに戻す
       for (const g of remaining) this.garbageQueue.unshift(g);
     }
@@ -1539,6 +2023,13 @@ class BotPlayer {
     }
 
     this.spawnPiece();
+
+    // Cold Clear: 新しいピースをキューに通知
+    if (this._ccBot && this.botLevel === 6) {
+      const nid = BotPlayer._ccPieceId(this.nextQueue[this.nextQueue.length - 1]);
+      if (nid >= 0) { try { this._ccBot.addNextPiece(nid); } catch(e) {} }
+    }
+
     if (!this.alive) {
       if (room) {
         io.to(this.roomId).emit('player_dead', { id: this.id, name: this.name });
@@ -1558,15 +2049,22 @@ class BotPlayer {
       if (!this.alive) return;
       const room = rooms[this.roomId];
       if (!room || !room.started || room.shogiMode) return;
-      this.think(() => {
-        if (this.alive) this.thinkTimer = setTimeout(tick, 50);
-      });
+      // Use setTimeout(0) to yield to other pending timers (other bots)
+      this.thinkTimer = setTimeout(() => {
+        this.think(() => {
+          if (this.alive) this.thinkTimer = setTimeout(tick, 50);
+        });
+      }, 0);
     };
     this.thinkTimer = setTimeout(tick, extraDelay + this.thinkDelay);
   }
 
-  stop() { if (this.thinkTimer) { clearTimeout(this.thinkTimer); this.thinkTimer = null; } }
+  stop() {
+    if (this.thinkTimer) { clearTimeout(this.thinkTimer); this.thinkTimer = null; }
+    if (this._ccBot) { try { this._ccBot.destroy(); } catch(e) {} this._ccBot = null; }
+  }
 }
+
 
 // ── Room helpers ──────────────────────────────────────────────────
 function createRoom(roomId) {
@@ -1597,7 +2095,8 @@ function broadcastRoomUpdate(room, roomId) {
   io.to(roomId).emit('room_update', {
     players: allP, host: room.host, started: room.started,
     mutationMode: room.mutationMode, mutationSeed: room.mutationSeed,
-    roomSettings: room.roomSettings
+    roomSettings: room.roomSettings,
+    hasCustomCode: !!(room.customBot||customBotCode.has(roomId))
   });
 }
 
@@ -1639,10 +2138,24 @@ function checkGameEnd(roomId) {
 let _botCounter = 0;
 function makeBotId() { return `bot_${Date.now()}_${_botCounter++}`; }
 const BOT_NAMES = ['NOVA','APEX','ZETA','ORION','VOLT','FLUX','NEXUS','CIPHER'];
+const customBotCode = new Map(); // roomId -> { code, filename }
 
 // ── Socket.IO ─────────────────────────────────────────────────────
+function broadcastOnlinePlayers() {
+  const list = Object.values(onlinePlayers);
+  io.emit('online_players', list);
+}
+
 io.on('connection', (socket) => {
   console.log('connected:', socket.id);
+  socket.playerName = null;
+
+  socket.on('set_name', ({name}) => {
+    if (!name) return;
+    socket.playerName = name;
+    onlinePlayers[socket.id] = name;
+    broadcastOnlinePlayers();
+  });
 
   socket.on('create_room', ({ name, roomId: requestedId }) => {
     if (requestedId) {
@@ -1653,6 +2166,7 @@ io.on('connection', (socket) => {
         if (er.players.find(p=>p.name===name)) { socket.emit('error',{msg:'Name already in room'}); return; }
         er.players.push({id:socket.id,name,board:null,score:0,lines:0,level:1,alive:true,combo:0,b2b:false});
         socket.join(rid); socket.roomId=rid; socket.playerName=name; lastRoom[name]=rid;
+        if (!onlinePlayers[socket.id]) { onlinePlayers[socket.id] = name; broadcastOnlinePlayers(); }
         socket.emit('room_joined',{roomId:rid,players:allPlayers(er)});
         broadcastRoomUpdate(er,rid); return;
       }
@@ -1663,6 +2177,7 @@ io.on('connection', (socket) => {
     room.host=socket.id;
     room.players.push({id:socket.id,name,board:null,score:0,lines:0,level:1,alive:true,combo:0,b2b:false});
     socket.join(roomId); socket.roomId=roomId; socket.playerName=name; lastRoom[name]=roomId;
+    if (!onlinePlayers[socket.id]) { onlinePlayers[socket.id] = name; broadcastOnlinePlayers(); }
     socket.emit('room_created',{roomId,players:allPlayers(room)});
     broadcastRoomUpdate(room,roomId);
   });
@@ -1688,17 +2203,58 @@ io.on('connection', (socket) => {
     broadcastRoomUpdate(room,roomId);
   });
 
-  socket.on('add_bot', ({botLevel}) => {
+  socket.on('add_bot', ({botLevel,botFileName,botCode}) => {
     const room=getRoom(socket.roomId); if (!room) return;
     if (socket.id!==room.host) return;
-    const lvl=Math.max(1,Math.min(5,parseInt(botLevel)||room.roomSettings.botLevel||3));
+    // ── 1体制限 ─────────────────────────────────────────────────
+    if (room.bots.length >= 1) {
+      socket.emit('error',{msg:'ボットは1体までです。先にKICKしてください。'});
+      return;
+    }
+    // ファイルコードが一緒に送られた場合はここでアップロードも処理
+    if (botCode && botFileName) {
+      room.customBot = {code: botCode, filename: botFileName};
+      customBotCode.set(socket.roomId, {code: botCode, filename: botFileName});
+      io.to(socket.roomId).emit('bot_code_status',{active:true});
+    }
     const botId=makeBotId();
     const usedNames=allPlayers(room).map(p=>p.name);
-    const bname=BOT_NAMES.find(n=>!usedNames.includes('🤖'+n))||('BOT'+(room.bots.length+1));
-    const fullName='🤖'+bname;
+
+
+    const lvl=Math.max(1,Math.min(6,parseInt(botLevel)||room.roomSettings.botLevel||3));
+    const cbc=room.customBot||customBotCode.get(socket.roomId);
+    const baseName = botFileName || (cbc ? cbc.filename : null) || 'CUSTOM';
+    let fullName;
+    if(cbc||botFileName){
+      let n=baseName;let i=2;
+      while(usedNames.includes('🤖'+n)){n=baseName+'_'+i;i++;}
+      fullName='🤖'+n;
+    } else {
+      const bname=BOT_NAMES.find(n=>!usedNames.includes('🤖'+n))||('BOT'+(room.bots.length+1));
+      fullName='🤖'+bname;
+    }
     room.bots.push({id:botId,name:fullName,isBot:true,botLevel:lvl,alive:true});
     broadcastRoomUpdate(room,socket.roomId);
-    addChatSys(socket.roomId,`🤖 ${fullName} (Lv.${lvl}) joined the room!`);
+    const lvlLabel = lvl === 6 ? 'CC' : `Lv.${lvl}`;
+    addChatSys(socket.roomId,`🤖 ${fullName} (${lvlLabel}) joined the room!`);
+  });
+
+  socket.on('upload_bot_code', ({code,filename}) => {
+    const room=getRoom(socket.roomId); if (!room) return;
+    if (socket.id!==room.host) return;
+    const fname=filename||'CUSTOM';
+    room.customBot = {code, filename:fname};
+    customBotCode.set(socket.roomId, {code,filename:fname});
+    io.to(socket.roomId).emit('bot_code_status',{active:true});
+    addChatSys(socket.roomId, `📦 Custom bot code "${fname}" uploaded!`);
+  });
+
+  socket.on('clear_bot_code', () => {
+    const room=getRoom(socket.roomId);
+    if(room)delete room.customBot;
+    customBotCode.delete(socket.roomId);
+    io.to(socket.roomId).emit('bot_code_status',{active:false});
+    addChatSys(socket.roomId, '🗑 Custom bot code cleared.');
   });
 
   socket.on('kick_bot', ({botId}) => {
@@ -1738,7 +2294,7 @@ io.on('connection', (socket) => {
     if (ns.gravityDec!==undefined) rs.gravityDec=Math.max(0,Math.min(200,parseInt(ns.gravityDec)||80));
     if (ns.gravityMin!==undefined) rs.gravityMin=Math.max(20,Math.min(500,parseInt(ns.gravityMin)||50));
     if (ns.lockDelay!==undefined) rs.lockDelay=Math.max(200,Math.min(3000,parseInt(ns.lockDelay)||1000));
-    if (ns.botLevel!==undefined) rs.botLevel=Math.max(1,Math.min(5,parseInt(ns.botLevel)||3));
+    if (ns.botLevel!==undefined) rs.botLevel=Math.max(1,Math.min(6,parseInt(ns.botLevel)||3));
     if (ns.shogiMode!==undefined) rs.shogiMode=!!ns.shogiMode;
     if (ns.recordTraining!==undefined) rs.recordTraining=!!ns.recordTraining;
     if (ns.soloMode!==undefined) rs.soloMode=!!ns.soloMode;
@@ -1804,10 +2360,11 @@ io.on('connection', (socket) => {
       }, 120000);
       room._roomId = socket.roomId;
     }
-
+    const cbcRoom = room.customBot || customBotCode.get(socket.roomId);
+    const botCode = cbcRoom ? cbcRoom.code : null;
     const realBots=room.bots.map(entry=>{
       const bag=new Bag(room.bagSeed); // 人間と同じシードで同じミノ順を共有
-      const bot=new BotPlayer(entry.id,entry.name,entry.botLevel,socket.roomId,bag);
+      const bot=new BotPlayer(entry.id,entry.name,entry.botLevel,socket.roomId,bag,botCode);
       return bot;
     });
     room.bots=realBots;
@@ -1832,7 +2389,7 @@ io.on('connection', (socket) => {
       // ソロモード: ゲーム終了条件はそのプレイヤーが死んだとき
       addChatSys(socket.roomId,'🎮 Solo mode — good luck!');
     } else if (!doShogi) {
-      realBots.forEach(b=>b.startAutonomous(3700));
+      realBots.forEach(b => b.startAutonomous(3700));
     } else {
       addChatSys(socket.roomId,'♟ SHOGI MODE: BOT waits for your move!');
     }
@@ -1938,6 +2495,10 @@ io.on('connection', (socket) => {
     socket.emit('rooms_list',list);
   });
 
+  socket.on('get_online_players', () => {
+    socket.emit('online_players', Object.values(onlinePlayers));
+  });
+
   socket.on('rejoin_room', ({roomId:rid,name}) => {
     const room=getRoom(rid);
     if (!room){socket.emit('rejoin_result',{success:false});socket.emit('error',{msg:'Room no longer exists'});return;}
@@ -1957,13 +2518,25 @@ io.on('connection', (socket) => {
       return;
     }
     
-    // 既に同名がいる場合は既存エントリを置き換え（同じタブで再接続した場合）
+    // 既に同名がいる場合は既存エントリをそのまま更新（順序とホストを維持）
     const existing=room.players.find(p=>p.name===name);
-    if(existing){room.players=room.players.filter(p=>p.name!==name);}
-    room.players.push({id:socket.id,name,board:null,score:0,lines:0,level:1,alive:true,combo:0,b2b:false});
+    if(existing){
+      const wasHost=existing.id===room.host;
+      existing.id=socket.id;
+      existing.board=null;
+      existing.score=0;
+      existing.lines=0;
+      existing.level=1;
+      existing.alive=true;
+      existing.combo=0;
+      existing.b2b=false;
+      if(wasHost)room.host=socket.id;
+    } else {
+      room.players.push({id:socket.id,name,board:null,score:0,lines:0,level:1,alive:true,combo:0,b2b:false});
+      const isNewHost=!room.host||!room.players.find(p=>p.id===room.host);
+      if(isNewHost)room.host=socket.id;
+    }
     socket.join(rid); socket.roomId=rid; socket.playerName=name; lastRoom[name]=rid;
-    const isNewHost=!room.host||!room.players.find(p=>p.id===room.host);
-    if(isNewHost)room.host=socket.id;
     socket.emit('rejoin_result',{
       success:true,roomId:rid,
       players:allPlayers(room).map(p=>({id:p.id,name:p.name,isBot:!!p.isBot,botLevel:p.botLevel||null})),
@@ -2009,7 +2582,7 @@ io.on('connection', (socket) => {
     const room=getRoom(socket.roomId); if (!room) return;
     room.players=room.players.filter(p=>p.id!==socket.id);
     socket.leave(socket.roomId);
-    if (room.players.length===0&&room.bots.length===0){delete rooms[socket.roomId];socket.roomId=null;return;}
+    if (room.players.length===0&&room.bots.length===0){delete rooms[socket.roomId];customBotCode.delete(socket.roomId);socket.roomId=null;return;}
     if (room.host===socket.id&&room.players.length>0) room.host=room.players[0].id;
     io.to(socket.roomId).emit('player_left',{id:socket.id});
     broadcastRoomUpdate(room,socket.roomId);
@@ -2017,10 +2590,14 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
+    if (socket.playerName && onlinePlayers[socket.id]) {
+      delete onlinePlayers[socket.id];
+      broadcastOnlinePlayers();
+    }
     const room=getRoom(socket.roomId); if (!room) return;
     room.players=room.players.filter(p=>p.id!==socket.id);
     if (room.spectators) room.spectators=room.spectators.filter(s=>s.id!==socket.id);
-    if (room.players.length===0&&room.bots.length===0){delete rooms[socket.roomId];return;}
+    if (room.players.length===0&&room.bots.length===0){delete rooms[socket.roomId];customBotCode.delete(socket.roomId);return;}
     if (room.host===socket.id&&room.players.length>0) room.host=room.players[0].id;
     io.to(socket.roomId).emit('player_left',{id:socket.id});
     broadcastRoomUpdate(room,socket.roomId);
@@ -2031,6 +2608,11 @@ io.on('connection', (socket) => {
 function addChatSys(roomId, text) {
   io.to(roomId).emit('chat_message',{id:'system',name:'SYSTEM',message:text});
 }
+
+// ══════════════════════════════════════════════════════════════════
+// External Bot REST API
+// ══════════════════════════════════════════════════════════════════
+// Parse JSON bodies for API routes
 
 const PORT=process.env.PORT||3000;
 server.listen(PORT,()=>console.log(`Tetrix server on http://localhost:${PORT}`));

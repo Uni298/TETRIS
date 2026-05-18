@@ -227,6 +227,20 @@
   .room-item-players { color: rgba(255,255,255,0.5); font-size: 0.8rem; }
   .room-item-join { color: var(--neon-cyan); font-size: 0.8rem; }
   .no-rooms { color: rgba(255,255,255,0.3); font-size: 0.85rem; text-align: center; padding: 1rem 0; }
+  .no-players { color: rgba(255,255,255,0.3); font-size: 0.85rem; }
+  .online-player-tag {
+    display: inline-block;
+    background: rgba(0,245,255,0.1);
+    border: 1px solid rgba(0,245,255,0.2);
+    border-radius: 12px;
+    padding: 0.2rem 0.7rem;
+    margin: 0.2rem;
+    color: var(--neon-cyan);
+    font-size: 0.8rem;
+    font-family: 'Share Tech Mono', monospace;
+    transition: border-color 0.2s;
+  }
+  .online-player-tag:hover { border-color: rgba(0,245,255,0.5); }
   .prev-room-banner {
     background: rgba(0,245,255,0.08);
     border: 1px solid rgba(0,245,255,0.3);
@@ -448,6 +462,39 @@
     font-size: 1.1rem;
     margin-bottom: 1.5rem;
     letter-spacing: 0.2em;
+  }
+
+
+  /* Solo offline button */
+  .solo-divider {
+    text-align: center;
+    color: rgba(0,245,255,0.35);
+    font-size: 0.75rem;
+    letter-spacing: 0.25em;
+    margin: 1rem 0 0.8rem;
+    position: relative;
+  }
+  .btn-solo {
+    display: block;
+    width: 100%;
+    padding: 0.85rem 1rem;
+    font-family: 'Orbitron', sans-serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    letter-spacing: 0.15em;
+    background: linear-gradient(135deg, rgba(255,190,11,0.12), rgba(255,0,110,0.10));
+    color: #ffbe0b;
+    border: 1px solid rgba(255,190,11,0.4);
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-bottom: 0.5rem;
+  }
+  .btn-solo:hover {
+    background: linear-gradient(135deg, rgba(255,190,11,0.22), rgba(255,0,110,0.18));
+    border-color: rgba(255,190,11,0.75);
+    box-shadow: 0 0 16px rgba(255,190,11,0.35);
+    transform: translateY(-2px);
   }
 
   /* MUTATION MODE BADGE */
@@ -884,6 +931,8 @@
       <input type="text" id="name-modal-input" placeholder="Enter name..." maxlength="16" autocomplete="off">
     </div>
     <button class="btn btn-primary" onclick="submitNameModal()">ENTER LOBBY ▶</button>
+    <div class="solo-divider"><span>— OR —</span></div>
+    <button class="btn btn-solo" onclick="startSoloOffline()">🎮 SOLO PLAY (OFFLINE)</button>
     <div class="error-msg" id="name-modal-error"></div>
   </div>
 </div>
@@ -909,6 +958,8 @@
         </div>
         <button class="btn btn-primary" style="width:auto;padding:0.5rem 1.2rem;margin:0" onclick="rejoinPrevRoom()">REJOIN ▶</button>
       </div>
+      <h2>▸ ONLINE PLAYERS (<span id="online-count">0</span>)</h2>
+      <div class="rooms-list" id="online-players-list" style="margin-bottom:1rem"><span class="no-players">None</span></div>
       <h2>▸ OPEN ROOMS</h2>
       <div class="rooms-list" id="rooms-list"><div class="no-rooms">No open rooms</div></div>
       <button class="btn btn-secondary" style="margin-bottom:0.5rem" onclick="refreshRooms()">↺ REFRESH</button>
@@ -1004,7 +1055,7 @@
           <h3 style="margin-bottom:0.6rem">🤖 BOT</h3>
           <div class="hs-row">
             <label>🧠 BOT Level</label>
-            <input type="range" id="bot-level-input" min="1" max="5" step="1" value="3"
+            <input type="range" id="bot-level-input" min="1" max="6" step="1" value="3"
               oninput="document.getElementById('bot-level-val').textContent=getBotLevelLabel(+this.value);updateRoomSetting('botLevel',this.value)">
             <span class="hs-val" id="bot-level-val">STRONG</span>
           </div>
@@ -1081,6 +1132,17 @@
 
           <div id="bot-list" style="margin-top:0.5rem"></div>
           <button class="btn btn-secondary" onclick="addBot()" style="margin-top:0.4rem;padding:0.4rem 1rem;font-size:0.75rem">＋ ADD BOT</button>
+
+          <!-- CUSTOM BOT CODE UPLOAD -->
+          <div style="margin-top:0.8rem;border-top:1px solid rgba(0,245,255,0.1);padding-top:0.6rem">
+            <label style="font-size:0.75rem;color:rgba(255,255,255,0.6);display:block;margin-bottom:0.3rem">📄 Custom Bot AI Code</label>
+            <input type="file" id="bot-code-input" style="font-size:0.7rem;color:rgba(255,255,255,0.5);width:100%">
+            <div style="display:flex;gap:0.4rem;margin-top:0.3rem">
+              <button class="btn btn-secondary" onclick="uploadBotCode()" style="padding:0.3rem 0.7rem;font-size:0.7rem;flex:1">UPLOAD</button>
+              <button class="btn btn-secondary" onclick="clearBotCode()" style="padding:0.3rem 0.7rem;font-size:0.7rem;background:rgba(255,0,110,0.15);border-color:rgba(255,0,110,0.4)">CLEAR</button>
+            </div>
+            <div id="bot-code-status" style="font-size:0.65rem;color:rgba(255,255,255,0.35);margin-top:0.2rem"></div>
+          </div>
         </div>
       </div>
 
