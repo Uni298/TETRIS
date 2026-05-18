@@ -1884,12 +1884,14 @@ class BotPlayer {
       attack += b2bBonus;
     }
 
+    // B2B Break: floor(b2bCount / 2) lines are sent/cancelled
+    if (wasB2B && !isB2Bable && lines > 0) {
+      attack += Math.floor(this.b2bCount / 2);
+    }
+
     if (lines > 0) {
       this.combo++;
       this.ren++;
-      const renAttackTable = [0,0,1,1,2,2,3,3,4,4,4,5];
-      const renAtk = renAttackTable[Math.min(this.ren, renAttackTable.length - 1)] || 5;
-      if (this.ren >= 2) attack += renAtk;
     } else {
       this.combo = -1;
       this.ren = 0;
@@ -1922,6 +1924,9 @@ class BotPlayer {
       // 次サイクル開始: 盤面が空なのでDFSがすぐ動く
       console.log(`[BOT] Perfect Clear #${this.pcCycle}!`);
     }
+
+    // 最終的な送るライン数 = ln(attack + ren * 1.25)
+    attack = Math.max(0, Math.floor(Math.log(attack + this.ren * 1.25)));
 
     // ── Garbage cancellation logic ──────────────────────────────────
     // 相殺: Pendingのゴミ（queue全体）を対象にする
